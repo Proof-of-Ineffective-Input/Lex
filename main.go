@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,13 +22,8 @@ type SearchArgs struct {
 	Query string `json:"query" jsonschema:"Search keywords (use English keywords for better reliability)"`
 }
 
-type URLToken struct {
-	URL   string `json:"url" jsonschema:"Target URL to scrape"`
-	Limit int    `json:"limit" jsonschema:"Content limit in characters (recommended 4000-12000, 0 for no limit)"`
-}
-
 type FetchArgs struct {
-	URLs []URLToken `json:"urls" jsonschema:"Target URLs to scrape with optional character limits"`
+	URLs map[string]int `json:"urls" jsonschema:"Map of target URLs to character limits (recommended 8000-32000, 0 for no limit)"`
 }
 
 type SearchResult struct {
@@ -103,33 +99,40 @@ func fetch(ctx context.Context, req *mcp.CallToolRequest, args FetchArgs) (*mcp.
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	results := make([]string, len(args.URLs))
-	errs := make([]error, len(args.URLs))
+	results := make(map[string]string, len(args.URLs))
+	errs := make(map[string]error, len(args.URLs))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 5)
-	for i, target := range args.URLs {
+	urls := make([]string, 0, len(args.URLs))
+	for u := range args.URLs {
+		urls = append(urls, u)
+	}
+	sort.Strings(urls)
+	for _, urlStr := range urls {
+		limit := args.URLs[urlStr]
 		wg.Add(1)
-		go func(i int, target URLToken) {
+		go func(target string, limit int) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			content, err := fetchSingle(ctx, client, target.URL, target.Limit)
+			content, err := fetchSingle(ctx, client, target, limit)
 			if err != nil {
-				errs[i] = err
+				errs[target] = err
 				return
 			}
-			results[i] = content
-		}(i, target)
+			results[target] = content
+		}(urlStr, limit)
 	}
 	wg.Wait()
 
 	var sb strings.Builder
-	for i, target := range args.URLs {
-		if errs[i] != nil {
-			sb.WriteString(fmt.Sprintf("### [%s](%s)\nFetch failed: %v\n\n", target.URL, target.URL, errs[i]))
+	for _, urlStr := range urls {
+		if err, ok := errs[urlStr]; ok {
+			sb.WriteString(fmt.Sprintf("### [%s](%s)\nFetch failed: %v\n\n", urlStr, urlStr, err))
 			continue
 		}
-		sb.WriteString(fmt.Sprintf("### [%s](%s)\n%s\n\n", target.URL, target.URL, results[i]))
+		content := results[urlStr]
+		sb.WriteString(fmt.Sprintf("### [%s](%s)\n%s\n\n", urlStr, urlStr, content))
 	}
 
 	return nil, FetchResult{Content: sb.String()}, nil
