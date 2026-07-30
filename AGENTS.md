@@ -5,5 +5,5 @@
 编译可执行文件：
 
 ```powershell
-go build -o ddg-search.exe .
+go build -o lex.exe .
 ```
