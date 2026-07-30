@@ -17,7 +17,7 @@ import (
 	"mcp-search-duckduckgo/pkg"
 )
 
-const highlightsCharBudget = 4000
+const highlightsTokenBudget = 3000
 
 type SearchArgs struct {
 	Query      string `json:"query" jsonschema:"Search keywords (use English keywords for better reliability)"`
@@ -25,7 +25,7 @@ type SearchArgs struct {
 }
 
 type FetchArgs struct {
-	URLs map[string]int `json:"urls" jsonschema:"Map of target URLs to character limits per page. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 4000 for quick extraction, 16000 for standard read, 32000 for comprehensive content."`
+	URLs map[string]int `json:"urls" jsonschema:"Map of target URLs to character limits per page. Each value is clamped to [12000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 12000 for quick extraction (~3000 tokens), 16000 for standard read, 32000 for comprehensive content."`
 }
 
 type searchResult struct {
@@ -36,7 +36,7 @@ type searchResult struct {
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "lex", Version: "0.2.3"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "lex", Version: "0.3.0"}, nil)
 
 	s.AddTool(&mcp.Tool{
 		Name:        "search",
@@ -59,13 +59,13 @@ func main() {
 
 	s.AddTool(&mcp.Tool{
 		Name:        "fetch",
-		Description: "Fetch URL content via direct HTML-to-Markdown conversion with optional character limits per URL. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page).",
+		Description: "Fetch URL content via direct HTML-to-Markdown conversion with optional character limits per URL. Each value is clamped to [12000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"urls": {
 					"type": "object",
-					"description": "Map of target URLs to character limits per page. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 4000 for quick extraction, 16000 for standard read, 32000 for comprehensive content.",
+					"description": "Map of target URLs to character limits per page. Each value is clamped to [12000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 12000 for quick extraction (~3000 tokens), 16000 for standard read, 32000 for comprehensive content.",
 					"additionalProperties": {
 						"type": "integer"
 					}
@@ -172,7 +172,7 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 				return
 			}
 
-			hl := pkg.ExtractHighlights(content, args.Query, highlightsCharBudget)
+			hl := pkg.ExtractHighlights(content, args.Query, highlightsTokenBudget)
 			if hl != "" {
 				r.Highlights = hl
 			}

@@ -42,14 +42,14 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          output="ddg-search-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
+          output="lex-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
           go build -ldflags="-s -w" -o "$output" main.go
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ddg-search-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: ddg-search-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+          name: lex-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: lex-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
 
   release:
     needs: build
