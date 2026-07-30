@@ -1,4 +1,4 @@
-package main
+package pkg
 
 import (
 	"math"
@@ -12,17 +12,13 @@ type scoredSentence struct {
 	OriginalIndex int
 }
 
-// extractHighlights splits content into sentences, scores each against the
-// query using keyword heuristics, re-ranks by relevance, then truncates to
-// maxChars on whole-sentence boundaries.
-func extractHighlights(content, query string, maxChars int) string {
+func ExtractHighlights(content, query string, maxChars int) string {
 	if maxChars <= 0 || query == "" || content == "" {
 		return ""
 	}
 
 	sentences := splitSentencesSimple(content)
 	if len(sentences) <= 2 {
-		// Too few sentences to bother re-ranking; just truncate.
 		return truncateSentences(sentences, maxChars)
 	}
 
@@ -31,18 +27,15 @@ func extractHighlights(content, query string, maxChars int) string {
 		return truncateSentences(sentences, maxChars)
 	}
 
-	// Build bigrams for phrase-level matching.
 	queryBigrams := buildBigrams(queryTokens)
 
 	scored := make([]scoredSentence, len(sentences))
 	maxHits := 0
 	for i, s := range sentences {
 		tokens := tokenize(s)
-		hits := countHits(tokens, queryTokens)
-		bigramHits := countBigramHits(tokens, queryBigrams)
-		totalHits := hits + bigramHits
-		if totalHits > maxHits {
-			maxHits = totalHits
+		hits := countHits(tokens, queryTokens) + countBigramHits(tokens, queryBigrams)
+		if hits > maxHits {
+			maxHits = hits
 		}
 		hitRate := float64(countUniqueMatches(tokens, queryTokens)) / float64(len(queryTokens))
 		scored[i] = scoredSentence{
@@ -50,10 +43,8 @@ func extractHighlights(content, query string, maxChars int) string {
 			Score:         hitRate,
 			OriginalIndex: i,
 		}
-		_ = totalHits // used below
 	}
 
-	// Compute final score: hit_rate * 0.5 + hit_count_norm * 0.3 + position_bonus * 0.2
 	for i := range scored {
 		tokens := tokenize(scored[i].Text)
 		hits := countHits(tokens, queryTokens) + countBigramHits(tokens, queryBigrams)
@@ -65,17 +56,14 @@ func extractHighlights(content, query string, maxChars int) string {
 		scored[i].Score = 0.5*scored[i].Score + 0.3*hitCountNorm + 0.2*positionBonus
 	}
 
-	// Sort by score descending.
 	sorted := make([]scoredSentence, len(scored))
 	copy(sorted, scored)
-	// Simple insertion sort (small n).
 	for i := 1; i < len(sorted); i++ {
 		for j := i; j > 0 && sorted[j].Score > sorted[j-1].Score; j-- {
 			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
 		}
 	}
 
-	// Select top sentences up to maxChars, keeping original order.
 	selected := make(map[int]bool)
 	totalChars := 0
 	for _, s := range sorted {
@@ -90,12 +78,10 @@ func extractHighlights(content, query string, maxChars int) string {
 		totalChars += n
 	}
 
-	// If nothing selected (all scores zero), fall back to first sentences.
 	if len(selected) == 0 {
 		return truncateSentences(sentences, maxChars)
 	}
 
-	// Rebuild in original order.
 	var b strings.Builder
 	for i, s := range sentences {
 		if !selected[i] {
@@ -109,38 +95,26 @@ func extractHighlights(content, query string, maxChars int) string {
 	return b.String()
 }
 
-// splitSentencesSimple splits text into sentences using punctuation and newline
-// boundaries. No NLP dependency — pure heuristic.
 func splitSentencesSimple(text string) []string {
 	if text == "" {
 		return nil
 	}
-
-	// Normalize line endings.
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 
 	var sentences []string
 	var buf strings.Builder
-
 	runes := []rune(text)
+
 	for i := 0; i < len(runes); i++ {
 		ch := runes[i]
-
-		// Paragraph break: double newline.
 		if ch == '\n' && i+1 < len(runes) && runes[i+1] == '\n' {
 			flushBuf(&buf, &sentences)
-			// Skip the second \n.
 			i++
 			continue
 		}
-
 		buf.WriteRune(ch)
-
-		// Sentence-ending punctuation.
 		if isSentenceEnd(ch) {
-			// Check it's not an abbreviation (followed by more lowercase / digit).
 			if i+1 >= len(runes) || !isLowerOrDigit(runes[i+1]) {
-				// Look ahead: if next non-space is uppercase or end, it's a boundary.
 				j := i + 1
 				for j < len(runes) && (runes[j] == ' ' || runes[j] == '\t') {
 					j++
@@ -152,17 +126,12 @@ func splitSentencesSimple(text string) []string {
 				}
 			}
 		}
-
-		// Single newline (list item, heading).
 		if ch == '\n' {
 			flushBuf(&buf, &sentences)
 		}
 	}
-
-	// Flush remaining.
 	flushBuf(&buf, &sentences)
 
-	// Filter and clean.
 	cleaned := make([]string, 0, len(sentences))
 	for _, s := range sentences {
 		s = strings.TrimSpace(s)
@@ -190,8 +159,6 @@ func flushBuf(buf *strings.Builder, sentences *[]string) {
 	}
 }
 
-// truncateSentences returns sentences joined, truncated to maxChars on
-// whole-sentence boundaries.
 func truncateSentences(sentences []string, maxChars int) string {
 	var b strings.Builder
 	for _, s := range sentences {
@@ -206,7 +173,6 @@ func truncateSentences(sentences []string, maxChars int) string {
 	return b.String()
 }
 
-// tokenize lowercases and splits into words, filtering common stop words.
 func tokenize(text string) []string {
 	text = strings.ToLower(text)
 	raw := strings.Fields(text)
@@ -215,7 +181,6 @@ func tokenize(text string) []string {
 	}
 	tokens := make([]string, 0, len(raw))
 	for _, w := range raw {
-		// Strip leading/trailing punctuation.
 		w = strings.Trim(w, `.,;:!?"'()[]{}「」『』【】《》<>、，。！？；：""''`)
 		if w == "" {
 			continue
@@ -246,7 +211,6 @@ func isStopWord(w string) bool {
 	return false
 }
 
-// countHits returns how many tokens from queryTokens appear in sentenceTokens.
 func countHits(sentenceTokens, queryTokens []string) int {
 	if len(sentenceTokens) == 0 || len(queryTokens) == 0 {
 		return 0
@@ -262,7 +226,6 @@ func countHits(sentenceTokens, queryTokens []string) int {
 	return hits
 }
 
-// countUniqueMatches returns how many distinct query tokens appear at least once.
 func countUniqueMatches(sentenceTokens, queryTokens []string) int {
 	if len(sentenceTokens) == 0 || len(queryTokens) == 0 {
 		return 0
@@ -280,7 +243,6 @@ func countUniqueMatches(sentenceTokens, queryTokens []string) int {
 	return matches
 }
 
-// buildBigrams builds bigrams from tokens.
 func buildBigrams(tokens []string) []string {
 	if len(tokens) < 2 {
 		return nil
@@ -292,12 +254,10 @@ func buildBigrams(tokens []string) []string {
 	return bigrams
 }
 
-// countBigramHits counts how many bigrams from queryBigrams appear in sentenceTokens.
 func countBigramHits(sentenceTokens, queryBigrams []string) int {
 	if len(sentenceTokens) < 2 || len(queryBigrams) == 0 {
 		return 0
 	}
-	// Build sentence bigram set.
 	set := make(map[string]int, len(sentenceTokens)-1)
 	for i := 0; i < len(sentenceTokens)-1; i++ {
 		set[sentenceTokens[i]+" "+sentenceTokens[i+1]]++

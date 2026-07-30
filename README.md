@@ -1,132 +1,89 @@
-# DuckDuckGo Search MCP Server
+# Lex
 
-A Go-based MCP (Model Context Protocol) server providing DuckDuckGo search and web scraping capabilities — **reimagined as a zero-overhead local Exa alternative**.
+A Go-based MCP server providing DuckDuckGo search and web scraping — a zero-overhead local Exa alternative.
 
-Unlike every other DuckDuckGo MCP server that returns only search snippets and forces a second `fetch` call to read pages, `ddg-search` **embeds full-page content extraction directly into the search result**. Each result comes with query-relevant highlights extracted via heuristic sentence re-ranking — no external API, no browser, no RAG pipeline.
+Unlike other DDG MCP servers that return only snippets and force a second `fetch` call, `Lex` embeds full-page content extraction directly into each search result via heuristic sentence re-ranking. No external API, no browser, no RAG pipeline.
 
-## Features
+## Tools
 
-| Tool | Description |
-|------|-------------|
-| `search` | Search DuckDuckGo Lite, **concurrently fetch each result page**, extract query-relevant highlights via keyword heuristics, and return structured results with markdown rendering |
-| `fetch` | Fetch URL content via direct HTML-to-Markdown conversion with configurable character limits |
+- `search` — Search DuckDuckGo Lite, concurrently fetch each result page, extract query-relevant highlights, return structured markdown
+- `fetch` — Fetch URL content via direct HTML-to-Markdown conversion with configurable character limits
 
-### What makes this different
+## Why Lex
 
-**One-shot search** — `search` returns not just snippets, but real page highlights. No need to call `fetch` separately for every result.
+- `One-shot search` — returns real page highlights, not just snippets
+- `Zero-overhead extraction` — no browser, no external API, no vector DB, no RAG
+- `Content-aware` — auto-detects `<main>`, `<article>`, `[role=main]` and other containers
+- `Concurrent by design` — up to 5 parallel fetches, 15s timeout, graceful snippet fallback
 
-**Zero-overhead page extraction** — no browser (Puppeteer/Playwright), no external API (Jina/Exa), no vector database, no RAG pipeline. Just Go, a lightweight HTML parser, and a heuristic sentence re-ranker that runs in microseconds.
-
-**Content-aware extraction** — automatically identifies `<main>`, `<article>`, `[role="main"]` and other content containers to filter out navigation, headers, and footers before highlight extraction.
-
-**Concurrent by design** — up to 5 parallel fetches with channel-based semaphore, 15s timeout per page, graceful degradation (falls back to snippet on fetch failure).
-
-## Comparison
-
-| Dimension | `ddg-search` (ours) | `nickclyde/duckduckgo-mcp-server` | Exa MCP | Jina MCP |
-|-----------|---------------------|------------------------------------|---------|----------|
-| Language | Go (single binary) | Python (needs runtime) | SaaS | SaaS |
-| Search + content in one call | **✅ Yes** | ❌ Separate tools | ❌ Separate | ❌ Separate |
-| Query-relevant highlights | **✅ Built-in** | ❌ Raw truncation only | ✅ (paid) | ✅ (paid) |
-| Content area extraction | **✅ `<main>`/`<article>` aware** | ❌ Raw HTML | ✅ | ✅ |
-| API key required | **❌ No** | ❌ No | ✅ Yes | ✅ Yes |
-| External dependencies | **❌ None** | `httpx` + optional `curl` | — | — |
-| Browser required | **❌ No** | ❌ No (but TLS fingerprint issues) | — | — |
-| Binary size | **~12 MB** | N/A (Python) | — | — |
-
-## Installation
+## Install
 
 ```bash
 go mod download
-go build -o ddg-search.exe .
+go build -o lex.exe .
 ```
-
-Or download a pre-built binary from [Releases](https://github.com/mindires/duckduck-go-mcp/releases).
 
 ## Usage
 
-### MCP Configuration
-
-Add to your MCP client configuration:
+Add to MCP client config:
 
 ```json
 {
   "mcpServers": {
-    "ddg-search": {
-      "command": "./ddg-search.exe"
+    "lex": {
+      "command": "./lex.exe"
     }
   }
 }
 ```
 
-### Tool Call Examples
-
-**search** — Search and get highlights in one shot:
+### `search`
 
 ```json
-{
-  "query": "Go 1.24 Swiss Table map performance"
-}
+{ "query": "Go 1.24 Swiss Table map performance" }
 ```
 
-Returns:
+Returns `Title`, `URL`, `Snippet`, and `Highlights` in markdown.
 
-```
-Title: Faster Go maps with Swiss Tables - The Go Programming Language
-URL: https://go.dev/blog/swisstable
-Snippet: Go 1.24 includes a completely new implementation of the built-in map type...
-Highlights:
-Go 1.24 includes a completely new implementation of the built-in map type,
-based on the Swiss Table design.
-In this blog post we'll look at how Swiss Tables improve upon traditional
-hash tables, and at some of the unique challenges in bringing the Swiss
-Table design to Go's maps.
-```
-
-**fetch** — Fetch web page content with configurable limits:
+### `fetch`
 
 ```json
-{
-  "urls": {
-    "https://example.com/article": 16000
-  }
-}
+{ "urls": { "https://example.com/article": 16000 } }
 ```
+
+Per-URL character limits clamped to `[2000, 64000]`, rounded to nearest 1000.
 
 ## How Highlights Work
 
+```mermaid
+flowchart LR
+  A["DDG Lite HTML"] --> B["parse results"]
+  B --> C["concurrent fetch (x5)"]
+  C --> D["HTML-to-Markdown"]
+  D --> E["content area extraction"]
+  E --> F["sentence split + tokenize"]
+  F --> G["keyword scoring"]
+  G --> H["top-sentence select"]
+  H --> I["highlights"]
 ```
-DDG Lite HTML → parse results → concurrent full-page fetch (×5)
-→ HTML-to-Markdown → content area extraction (<main>/<article>/...)
-→ sentence splitting → tokenize + stop-word filter
-→ keyword scoring (hit rate × 0.5 + hit count × 0.3 + position × 0.2)
-→ top-sentence selection → original-order reassembly → highlights
-```
 
-The heuristic re-ranker scores every sentence against the query using:
+Scoring formula: `hit_rate * 0.5 + hit_count_norm * 0.3 + position_bonus * 0.2`. ~100 lines of pure Go, zero ML.
 
-- **Unigram hits** — individual keyword matches
-- **Bigram hits** — phrase-level matches (e.g. "Swiss Table")
-- **Coverage** — what fraction of query tokens appear in the sentence
-- **Position bonus** — earlier sentences have a slight advantage
-
-All in ~100 lines of pure Go, zero ML dependencies.
-
-## Tech Stack
+## Tech
 
 - Go 1.25+
-- [go-sdk/mcp](https://github.com/modelcontextprotocol/go-sdk) — MCP Go SDK
-- [goquery](https://github.com/PuerkitoBio/goquery) — HTML parsing & content extraction
-- [html-to-markdown](https://github.com/JohannesKaufmann/html-to-markdown) — HTML to Markdown conversion
+- `go-sdk/mcp` — MCP Go SDK
+- `goquery` — HTML parsing & content extraction
+- `html-to-markdown` — HTML to Markdown conversion
 
 ## Implementation Details
 
 - Uses DuckDuckGo Lite (`lite.duckduckgo.com`) — no API key, no rate limit worries
 - `search` concurrently fetches each result page (concurrency: 5, timeout: 15s)
-- Content area extraction via ordered selectors: `<main>` → `<article>` → `[role="main"]` → `.post-content` → `.content` → `#content`
+- Content area extraction via ordered selectors: `<main>` → `<article>` → `[role=main]` → `.post-content` → `.content` → `#content`
 - Highlights budget: 4000 characters per page, whole-sentence boundaries
-- Graceful degradation: if a page fetch fails, the result still shows with its original snippet
-- `fetch` supports per-URL character limits, clamped to [2000, 64000], rounded to nearest 1000
+- Graceful degradation: failed page fetches fall back to original snippet
+- `fetch` supports per-URL character limits, clamped to `[2000, 64000]`, rounded to nearest 1000
 
 ## License
 
