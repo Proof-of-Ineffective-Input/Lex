@@ -36,7 +36,7 @@ type searchResult struct {
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "lex", Version: "0.3.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.3.1"}, nil)
 
 	s.AddTool(&mcp.Tool{
 		Name:        "search",
@@ -158,7 +158,7 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 
 	fetchClient := &http.Client{Timeout: 15 * time.Second}
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 5)
+	sem := make(chan struct{}, 8)
 
 	for i := range results {
 		wg.Add(1)
@@ -223,7 +223,7 @@ func fetchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolR
 	results := make(map[string]string, len(args.URLs))
 	errs := make(map[string]error, len(args.URLs))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 5)
+	sem := make(chan struct{}, 8)
 	urls := make([]string, 0, len(args.URLs))
 	for u := range args.URLs {
 		urls = append(urls, u)

@@ -4,6 +4,13 @@ import (
 	"math"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/encoding/korean"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/encoding/traditionalchinese"
 )
 
 type scoredSentence struct {
@@ -18,6 +25,21 @@ func ExtractHighlights(content, query string, maxTokens int) string {
 	}
 
 	sentences := splitSentencesPreservingCode(content)
+
+	// 先尝试修复乱码句子，修复不了才滤除
+	repaired := make([]string, 0, len(sentences))
+	for _, s := range sentences {
+		if isGarbledText(s) {
+			if fixed := tryFixGarbled(s); fixed != "" {
+				repaired = append(repaired, fixed)
+			}
+			// 修复不了则丢弃
+		} else {
+			repaired = append(repaired, s)
+		}
+	}
+	sentences = repaired
+
 	if len(sentences) <= 2 {
 		return truncateByTokens(sentences, maxTokens)
 	}
@@ -421,6 +443,96 @@ func isCodeQuery(query string) bool {
 		}
 	}
 	return false
+}
+
+func isGarbledText(s string) bool {
+	// 检测 U+FFFD replacement character — 明确表示编码错误
+	if strings.ContainsRune(s, '\uFFFD') {
+		return true
+	}
+
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return false
+	}
+
+	highBytes := 0
+	cjkRunes := 0
+	nonPrintable := 0
+
+	for _, r := range runes {
+		if r > 0x7F && r < 0xA0 {
+			highBytes++ // ISO-8859-1 控制字符区域
+		}
+		if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) ||
+			unicode.Is(unicode.Katakana, r) || unicode.Is(unicode.Hangul, r) {
+			cjkRunes++
+		}
+		if r < 0x20 && r != '\n' && r != '\r' && r != '\t' {
+			nonPrintable++
+		}
+	}
+
+	// 高位字节占比 > 30% 且无 CJK → 很可能是 Latin-1 被误解析为 UTF-8
+	if float64(highBytes)/float64(len(runes)) > 0.3 && cjkRunes == 0 {
+		return true
+	}
+
+	// 不可打印字符占比 > 10%
+	if float64(nonPrintable)/float64(len(runes)) > 0.1 {
+		return true
+	}
+
+	return false
+}
+
+// tryFixGarbled 尝试用常见编码重新解码乱码文本。
+// 将当前文本视为 Latin-1 编码的字节序列，尝试用其他编码重新解释。
+// 返回修复后的文本，若无法修复则返回空字符串。
+func tryFixGarbled(s string) string {
+	// 将当前 UTF-8 字符串转回原始字节（假设它是被误解析的 Latin-1）
+	raw := make([]byte, 0, len(s))
+	for _, r := range s {
+		if r <= 0xFF {
+			raw = append(raw, byte(r))
+		} else {
+			// 包含有效多字节 UTF-8 字符，不是单纯的编码错误
+			return ""
+		}
+	}
+
+	if len(raw) == 0 {
+		return ""
+	}
+
+	// 按优先级尝试各编码解码
+	decoders := []struct {
+		name string
+		enc  encoding.Encoding
+	}{
+		{"gbk", simplifiedchinese.GBK},
+		{"gb2312", simplifiedchinese.HZGB2312},
+		{"big5", traditionalchinese.Big5},
+		{"shift_jis", japanese.ShiftJIS},
+		{"euc_jp", japanese.EUCJP},
+		{"euc_kr", korean.EUCKR},
+		{"iso_8859_1", charmap.ISO8859_1},
+		{"windows_1252", charmap.Windows1252},
+	}
+
+	for _, d := range decoders {
+		decoded, err := d.enc.NewDecoder().Bytes(raw)
+		if err != nil {
+			continue
+		}
+		result := string(decoded)
+		// 解码后不再乱码才算修复成功
+		if !isGarbledText(result) {
+			return result
+		}
+	}
+
+	return ""
 }
 
 func isNoiseSentence(s string) bool {
