@@ -19,17 +19,29 @@ import (
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/[IP] Safari/537.36"
 
+// searchLimit is the default character budget for highlights per result page.
+// Each result page is fetched in full, then highlights are extracted within
+// this budget using keyword-heuristic sentence re-ranking.
+const defaultSearchLimit = 4000
+
 type SearchArgs struct {
 	Query      string `json:"query" jsonschema:"Search keywords (use English keywords for better reliability)"`
 	MaxResults int    `json:"max_results,omitempty" jsonschema:"Maximum number of results to return (default 10, max 50)"`
 }
 
 type FetchArgs struct {
-	URLs map[string]int `json:"urls" jsonschema:"Map of target URLs to character limits per page. Each value is clamped to [16000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 16000 for quick extraction, 32000 for standard read, 64000 for comprehensive content."`
+	URLs map[string]int `json:"urls" jsonschema:"Map of target URLs to character limits per page. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 4000 for quick highlights, 16000 for standard read, 32000 for comprehensive content."`
+}
+
+type searchResult struct {
+	Title      string
+	URL        string
+	Snippet    string
+	Highlights string
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "ddg-search", Version: "1.1.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "ddg-search", Version: "1.2.0"}, nil)
 
 	// Use Server.AddTool (low-level API) to avoid the generic AddTool's
 	// automatic StructuredContent population. The generic AddTool wraps
@@ -38,7 +50,7 @@ func main() {
 	// For plain-markdown tools, we want only Content with no StructuredContent.
 	s.AddTool(&mcp.Tool{
 		Name:        "search",
-		Description: "Search DuckDuckGo Lite and return structured results with markdown rendering",
+		Description: "Search DuckDuckGo Lite, fetch each result page, extract query-relevant highlights via keyword heuristics, and return structured results with markdown rendering",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -57,13 +69,13 @@ func main() {
 
 	s.AddTool(&mcp.Tool{
 		Name:        "fetch",
-		Description: "Fetch URL content via direct HTML-to-Markdown conversion with optional character limits per URL",
+		Description: "Fetch URL content via direct HTML-to-Markdown conversion with optional character limits per URL. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page).",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"urls": {
 					"type": "object",
-					"description": "Map of target URLs to character limits per page. Each value is clamped to [16000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 16000 for quick extraction, 32000 for standard read, 64000 for comprehensive content.",
+					"description": "Map of target URLs to character limits per page. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 4000 for quick extraction, 16000 for standard read, 32000 for comprehensive content.",
 					"additionalProperties": {
 						"type": "integer"
 					}
@@ -126,7 +138,8 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 		}, nil
 	}
 
-	var results []string
+	// Parse DDG results.
+	var results []searchResult
 	doc.Find("table").Last().Find("tr").Each(func(i int, s *goquery.Selection) {
 		link := s.Find("a.result-link")
 		if link.Length() == 0 {
@@ -138,18 +151,63 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 		if snippet == "" {
 			snippet = "(no description available)"
 		}
-		results = append(results, fmt.Sprintf("Title: %s\nURL: %s\nSnippet: %s", title, resolveDDGURL(href), snippet))
+		results = append(results, searchResult{
+			Title:   title,
+			URL:     resolveDDGURL(href),
+			Snippet: snippet,
+		})
 	})
 
-	var md string
 	if len(results) == 0 {
-		md = "No results found."
-	} else {
-		md = strings.Join(results, "\n\n---\n\n")
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "No results found."}},
+		}, nil
+	}
+
+	// Cap results to maxResults.
+	if len(results) > maxResults {
+		results = results[:maxResults]
+	}
+
+	// Concurrently fetch each result page and extract highlights.
+	fetchClient := &http.Client{Timeout: 15 * time.Second}
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 5) // concurrency 5
+
+	for i := range results {
+		wg.Add(1)
+		go func(r *searchResult) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			content, err := fetchSingle(ctx, fetchClient, r.URL, 0) // limit=0 = full page
+			if err != nil {
+				return // keep original snippet only
+			}
+
+			hl := extractHighlights(content, args.Query, defaultSearchLimit)
+			if hl != "" {
+				r.Highlights = hl
+			}
+		}(&results[i])
+	}
+	wg.Wait()
+
+	// Assemble output.
+	var sb strings.Builder
+	for i, r := range results {
+		if i > 0 {
+			sb.WriteString("\n\n---\n\n")
+		}
+		sb.WriteString(fmt.Sprintf("Title: %s\nURL: %s\nSnippet: %s", r.Title, r.URL, r.Snippet))
+		if r.Highlights != "" {
+			sb.WriteString(fmt.Sprintf("\nHighlights:\n%s", r.Highlights))
+		}
 	}
 
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: md}},
+		Content: []mcp.Content{&mcp.TextContent{Text: sb.String()}},
 	}, nil
 }
 
@@ -250,8 +308,8 @@ func normalizeLimit(limit int) int {
 	if limit <= 0 {
 		return 0
 	}
-	if limit < 16000 {
-		limit = 16000
+	if limit < 2000 {
+		limit = 2000
 	}
 	if limit > 64000 {
 		limit = 64000
@@ -265,9 +323,15 @@ func fetchSingle(ctx context.Context, client *http.Client, target string, limit 
 	if err != nil {
 		return "", err
 	}
-	md, err := htmltomarkdown.ConvertString(string(data))
+
+	html := string(data)
+
+	// Try to extract main content area to avoid nav/header/footer noise.
+	contentHTML := extractMainContent(html)
+
+	md, err := htmltomarkdown.ConvertString(contentHTML)
 	if err != nil {
-		return truncateContent(string(data), limit), nil
+		return truncateContent(contentHTML, limit), nil
 	}
 	return truncateContent(md, limit), nil
 }
@@ -278,6 +342,40 @@ func truncateContent(content string, limit int) string {
 	}
 	truncated := content[:limit]
 	return fmt.Sprintf("%s\n\n---\n*Content truncated to %d characters (original: %d characters)*", truncated, limit, len(content))
+}
+
+// extractMainContent attempts to extract the primary content area from HTML
+// using common selectors. Falls back to full HTML if no content area is found.
+func extractMainContent(html string) string {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return html
+	}
+
+	// Ordered by specificity: most semantic first.
+	selectors := []string{
+		"main",
+		"article",
+		"[role=main]",
+		".post-content",
+		".entry-content",
+		".article-content",
+		".content",
+		"#content",
+		"#main-content",
+	}
+
+	for _, sel := range selectors {
+		selection := doc.Find(sel).First()
+		if selection.Length() > 0 {
+			inner, err := selection.Html()
+			if err == nil && len(inner) > 200 {
+				return inner
+			}
+		}
+	}
+
+	return html
 }
 
 func readURL(ctx context.Context, client *http.Client, target string) ([]byte, error) {
