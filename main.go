@@ -36,7 +36,7 @@ type searchResult struct {
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "ddg-search", Version: "1.2.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "lex", Version: "0.2.3"}, nil)
 
 	s.AddTool(&mcp.Tool{
 		Name:        "search",
