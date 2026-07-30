@@ -21,7 +21,7 @@ const highlightsTokenBudget = 3000
 
 type SearchArgs struct {
 	Query      string `json:"query" jsonschema:"Search keywords (use English keywords for better reliability)"`
-	MaxResults int    `json:"max_results,omitempty" jsonschema:"Maximum number of results to return (default 10, max 50)"`
+	MaxResults int    `json:"max_results,omitempty" jsonschema:"Number of results to return. Clamped to [5, 50]. Recommended: 10-20 for balanced speed and coverage (default 10)"`
 }
 
 type FetchArgs struct {
@@ -36,7 +36,7 @@ type searchResult struct {
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.3.1"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.3.2"}, nil)
 
 	s.AddTool(&mcp.Tool{
 		Name:        "search",
@@ -99,6 +99,9 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 	maxResults := args.MaxResults
 	if maxResults <= 0 {
 		maxResults = 10
+	}
+	if maxResults < 5 {
+		maxResults = 5
 	}
 	if maxResults > 50 {
 		maxResults = 50

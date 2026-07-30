@@ -13,6 +13,12 @@ import (
 	"golang.org/x/text/encoding/traditionalchinese"
 )
 
+// BM25 参数
+const (
+	bm25K1 = 1.5  // 词频饱和参数
+	bm25B  = 0.75 // 长度归一化参数
+)
+
 type scoredSentence struct {
 	Text          string
 	Score         float64
@@ -51,58 +57,117 @@ func ExtractHighlights(content, query string, maxTokens int) string {
 
 	queryStems := stemTokens(queryTokens)
 	queryBigrams := buildBigrams(queryTokens)
+	queryExpanded := expandIdentifierTokens(queryTokens)
 
 	isCodeQ := isCodeQuery(query)
+	isSymbolQ := isSymbolQuery(query)
+	_ = isCodeQ
+	_ = isSymbolQ
 
-	scored := make([]scoredSentence, len(sentences))
-	maxHits := 0
+	// 统计全局 IDF 所需的文档级统计量
+	type docStats struct {
+		length int
+		tf     map[string]int // term frequency in this sentence
+	}
+	sentenceStats := make([]docStats, len(sentences))
+	totalDocs := len(sentences)
+	docFreq := make(map[string]int) // 包含该 term 的句子数
 	for i, s := range sentences {
 		tokens := tokenize(s)
-		hits := countHits(tokens, queryTokens) + countBigramHits(tokens, queryBigrams)
-		hits += countStemHits(tokens, queryStems)
-		if hits > maxHits {
-			maxHits = hits
+		stats := docStats{length: len(tokens), tf: make(map[string]int)}
+		seen := make(map[string]bool)
+		for _, t := range tokens {
+			stats.tf[t]++
+			if !seen[t] {
+				seen[t] = true
+				docFreq[t]++
+			}
 		}
-		hitRate := float64(countUniqueMatches(tokens, queryTokens)) / float64(len(queryTokens))
-		scored[i] = scoredSentence{
-			Text:          s,
-			Score:         hitRate,
-			OriginalIndex: i,
+		// 也计入展开后的标识符
+		expanded := expandIdentifierTokens(tokens)
+		for _, et := range expanded {
+			if !seen[et] {
+				seen[et] = true
+				docFreq[et]++
+			}
 		}
+		sentenceStats[i] = stats
+	}
+	avgDocLen := 0
+	for _, st := range sentenceStats {
+		avgDocLen += st.length
+	}
+	if totalDocs > 0 {
+		avgDocLen /= totalDocs
+	}
+	if avgDocLen < 1 {
+		avgDocLen = 1
 	}
 
-	for i := range scored {
-		tokens := tokenize(scored[i].Text)
-		hits := countHits(tokens, queryTokens) + countBigramHits(tokens, queryBigrams)
-		hits += countStemHits(tokens, queryStems)
-		hitCountNorm := 0.0
-		if maxHits > 0 {
-			hitCountNorm = math.Log(1+float64(hits)) / math.Log(1+float64(maxHits))
-		}
-		positionBonus := 1.0 - 0.5*float64(scored[i].OriginalIndex)/float64(len(scored))
+	// BM25 评分 + 重排序信号
+	scored := make([]scoredSentence, len(sentences))
+	maxBM25 := 0.0
+	for i, s := range sentences {
+		tokens := tokenize(s)
+		expanded := expandIdentifierTokens(tokens)
 
-		lexicalWeight := 0.5
-		semanticWeight := 0.3
-		if isCodeQ {
-			lexicalWeight = 0.65
-			semanticWeight = 0.15
+		// BM25 核心评分
+		bm25Score := 0.0
+		allQueryTokens := append([]string{}, queryTokens...)
+		allQueryTokens = append(allQueryTokens, queryExpanded...)
+
+		seen := make(map[string]bool)
+		for _, qt := range allQueryTokens {
+			if seen[qt] {
+				continue
+			}
+			seen[qt] = true
+			tf := sentenceStats[i].tf[qt]
+			if tf == 0 {
+				continue
+			}
+			df := docFreq[qt]
+			if df == 0 {
+				df = 1
+			}
+			idf := math.Log(1 + (float64(totalDocs)-float64(df)+0.5)/(float64(df)+0.5))
+			docLen := sentenceStats[i].length
+			if docLen < 1 {
+				docLen = 1
+			}
+			bm25Score += idf * (float64(tf) * (bm25K1 + 1)) /
+				(float64(tf) + bm25K1*(1-bm25B+bm25B*float64(docLen)/float64(avgDocLen)))
 		}
+
+		// 额外信号：bigram 匹配、词干匹配、展开标识符匹配
+		bigramHits := countBigramHits(tokens, queryBigrams)
+		stemHits := countStemHits(tokens, queryStems)
+		expandedHits := countHits(expanded, queryExpanded)
+
+		bonus := float64(bigramHits)*0.5 + float64(stemHits)*0.3 + float64(expandedHits)*0.3
+
+		bm25Score += bonus
+		if bm25Score > maxBM25 {
+			maxBM25 = bm25Score
+		}
+
+		positionBonus := 1.0 - 0.5*float64(i)/float64(len(scored))
 
 		codeBoost := 0.0
-		if containsCodeBlock(scored[i].Text) {
+		if containsCodeBlock(s) {
 			codeBoost = 0.1
 		}
 
 		noisePenalty := 0.0
-		if isNoiseSentence(scored[i].Text) {
+		if isNoiseSentence(s) {
 			noisePenalty = 0.3
 		}
 
-		scored[i].Score = lexicalWeight*scored[i].Score +
-			semanticWeight*hitCountNorm +
-			0.2*positionBonus +
-			codeBoost -
-			noisePenalty
+		scored[i] = scoredSentence{
+			Text:          s,
+			Score:         bm25Score + 0.2*positionBonus + codeBoost - noisePenalty,
+			OriginalIndex: i,
+		}
 	}
 
 	sorted := make([]scoredSentence, len(scored))
@@ -142,6 +207,112 @@ func ExtractHighlights(content, query string, maxTokens int) string {
 		b.WriteString(s)
 	}
 	return b.String()
+}
+
+// isSymbolQuery 检测查询是否为符号/标识符查询（如 Foo::bar, getUserById）
+func isSymbolQuery(query string) bool {
+	q := strings.ToLower(query)
+	parts := strings.Fields(q)
+	if len(parts) == 0 {
+		return false
+	}
+	symbolCount := 0
+	for _, p := range parts {
+		// 包含特殊符号
+		if strings.ContainsAny(p, "::->._") {
+			symbolCount++
+			continue
+		}
+		// camelCase 检测
+		hasUpper := false
+		hasLower := false
+		for _, r := range p {
+			if unicode.IsUpper(r) {
+				hasUpper = true
+			}
+			if unicode.IsLower(r) {
+				hasLower = true
+			}
+		}
+		if hasUpper && hasLower {
+			symbolCount++
+			continue
+		}
+	}
+	// 过半 token 是符号形式
+	return len(parts) > 0 && float64(symbolCount)/float64(len(parts)) >= 0.5
+}
+
+// expandIdentifierTokens 展开 camelCase/snake_case 标识符为子 token
+// 例如: "parseConfig" → ["parse", "config"], "config_parser" → ["config", "parser"]
+func expandIdentifierTokens(tokens []string) []string {
+	if len(tokens) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var result []string
+	for _, t := range tokens {
+		// snake_case
+		if strings.Contains(t, "_") {
+			parts := strings.Split(t, "_")
+			for _, p := range parts {
+				p = strings.ToLower(p)
+				if p != "" && !seen[p] {
+					seen[p] = true
+					result = append(result, p)
+				}
+			}
+			continue
+		}
+		// camelCase / PascalCase
+		expanded := splitCamelCase(t)
+		for _, p := range expanded {
+			p = strings.ToLower(p)
+			if p != "" && !seen[p] {
+				seen[p] = true
+				result = append(result, p)
+			}
+		}
+	}
+	return result
+}
+
+// splitCamelCase 将 camelCase/PascalCase 拆分为子词
+// "parseConfig" → ["parse", "Config"], "XMLParser" → ["XML", "Parser"]
+func splitCamelCase(word string) []string {
+	if word == "" {
+		return nil
+	}
+	var parts []string
+	var buf strings.Builder
+	runes := []rune(word)
+	for i, r := range runes {
+		if unicode.IsUpper(r) {
+			if buf.Len() > 0 {
+				// 处理连续大写缩写: "XMLParser" → "XML" + "Parser"
+				if buf.Len() > 1 && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
+					// 前一个字符是大写，当前也是大写，下一个是小写
+					// 说明前面是缩写，当前是新的词开始
+					prev := buf.String()
+					short := prev[:len(prev)-1]
+					if short != "" {
+						parts = append(parts, short)
+					}
+					buf.Reset()
+					buf.WriteByte(byte(runes[i-1]))
+				}
+				parts = append(parts, buf.String())
+				buf.Reset()
+			}
+			buf.WriteRune(r)
+		} else {
+			buf.WriteRune(r)
+		}
+	}
+	if buf.Len() > 0 {
+		parts = append(parts, buf.String())
+	}
+	return parts
 }
 
 func estimateTokens(s string) int {
