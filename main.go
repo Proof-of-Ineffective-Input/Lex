@@ -17,7 +17,10 @@ import (
 	"mcp-search-duckduckgo/pkg"
 )
 
-const highlightsTokenBudget = 3000
+const (
+	defaultFetchLimit    = 2000
+	highlightsFullBudget = 3000
+)
 
 type SearchArgs struct {
 	Query      string `json:"query" jsonschema:"Search keywords (use English keywords for better reliability)"`
@@ -25,7 +28,7 @@ type SearchArgs struct {
 }
 
 type FetchArgs struct {
-	URLs map[string]int `json:"urls" jsonschema:"Map of target URLs to character limits per page. Each value is clamped to [12000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 12000 for quick extraction (~3000 tokens), 16000 for standard read, 32000 for comprehensive content."`
+	URLs map[string]int `json:"urls" jsonschema:"Map of target URLs to character limits per page. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 2000 for quick extraction (~500 tokens), 8000 for standard read, 16000 for comprehensive content."`
 }
 
 type searchResult struct {
@@ -33,14 +36,15 @@ type searchResult struct {
 	URL        string
 	Snippet    string
 	Highlights string
+	Score      float64
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.3.2"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.3.3"}, nil)
 
 	s.AddTool(&mcp.Tool{
-		Name:        "search",
-		Description: "Search DuckDuckGo Lite, fetch each result page, extract query-relevant highlights via keyword heuristics, and return structured results with markdown rendering",
+		Name:        "web_search_lex",
+		Description: "Search DuckDuckGo Lite, fetch each result page, extract query-relevant highlights via BM25 re-ranking, and return structured results with markdown rendering. Also callable as 'search' or 'web_search'. Top-ranked pages get full highlights; lower-ranked pages get condensed highlights.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -58,14 +62,14 @@ func main() {
 	}, searchHandler)
 
 	s.AddTool(&mcp.Tool{
-		Name:        "fetch",
-		Description: "Fetch URL content via direct HTML-to-Markdown conversion with optional character limits per URL. Each value is clamped to [12000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page).",
+		Name:        "web_fetch_lex",
+		Description: "Fetch URL content via direct HTML-to-Markdown conversion with optional character limits per URL. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Also callable as 'fetch' or 'web_fetch'.",
 		InputSchema: json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"urls": {
 					"type": "object",
-					"description": "Map of target URLs to character limits per page. Each value is clamped to [12000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 12000 for quick extraction (~3000 tokens), 16000 for standard read, 32000 for comprehensive content.",
+					"description": "Map of target URLs to character limits per page. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 2000 for quick extraction (~500 tokens), 8000 for standard read, 16000 for comprehensive content.",
 					"additionalProperties": {
 						"type": "integer"
 					}
@@ -159,30 +163,60 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 		results = results[:maxResults]
 	}
 
+	// 阶段 1：并发抓取全文
 	fetchClient := &http.Client{Timeout: 15 * time.Second}
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
 
+	contents := make([]string, len(results))
 	for i := range results {
 		wg.Add(1)
-		go func(r *searchResult) {
+		go func(idx int, r *searchResult) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			content, err := pkg.FetchSingle(ctx, fetchClient, r.URL, 0)
+			content, err := pkg.FetchSingle(ctx, fetchClient, r.URL, defaultFetchLimit)
 			if err != nil {
 				return
 			}
-
-			hl := pkg.ExtractHighlights(content, args.Query, highlightsTokenBudget)
-			if hl != "" {
-				r.Highlights = hl
-			}
-		}(&results[i])
+			contents[idx] = content
+		}(i, &results[i])
 	}
 	wg.Wait()
 
+	// 阶段 2：页面级 BM25 评分
+	for i := range results {
+		if contents[i] != "" {
+			results[i].Score = pkg.ScorePage(contents[i], args.Query)
+		}
+	}
+
+	// 按评分降序排序
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	// 阶段 3：分级分配 highlights budget
+	// 前一半（向上取整）拿 full budget，后一半拿 half budget
+	n := len(results)
+	topN := (n + 1) / 2 // 前一半（含中间）
+	for i := range results {
+		if contents[i] == "" {
+			continue
+		}
+		budget := highlightsFullBudget
+		if i >= topN {
+			budget = highlightsFullBudget / 2
+		}
+		hl := pkg.ExtractHighlights(contents[i], args.Query, budget)
+		if hl != "" {
+			results[i].Highlights = hl
+		}
+	}
+
+	// 按原始 DDG 顺序还原（可选：保持 DDG 排序更自然）
+	// 这里保持评分排序，让用户先看到最相关的结果
 	var sb strings.Builder
 	for i, r := range results {
 		if i > 0 {

@@ -13,6 +13,91 @@ import (
 	"golang.org/x/text/encoding/traditionalchinese"
 )
 
+// ScorePage 对整页内容做 BM25 评分，返回与查询的相关性分数。
+// 用于 search 路径中对多个结果页面排序，高分页面分配更多 highlights budget。
+func ScorePage(content, query string) float64 {
+	if content == "" || query == "" {
+		return 0
+	}
+	queryTokens := tokenize(query)
+	if len(queryTokens) == 0 {
+		return 0
+	}
+	queryStems := stemTokens(queryTokens)
+	queryExpanded := expandIdentifierTokens(queryTokens)
+
+	contentTokens := tokenize(content)
+	if len(contentTokens) == 0 {
+		return 0
+	}
+
+	// 文档级统计
+	docLen := len(contentTokens)
+	if docLen < 1 {
+		docLen = 1
+	}
+	tf := make(map[string]int)
+	seen := make(map[string]bool)
+	for _, t := range contentTokens {
+		tf[t]++
+		if !seen[t] {
+			seen[t] = true
+		}
+	}
+	expanded := expandIdentifierTokens(contentTokens)
+	for _, et := range expanded {
+		if !seen[et] {
+			seen[et] = true
+		}
+	}
+
+	// 用查询词集合模拟 IDF（假设查询词在 1 个文档中出现，总文档数 10）
+	// 这不是精确 IDF，但足够用于页面间相对排序
+	totalDocs := 10
+	bm25Score := 0.0
+	avgDocLen := 200.0
+
+	allQueryTokens := append([]string{}, queryTokens...)
+	allQueryTokens = append(allQueryTokens, queryExpanded...)
+
+	seenQt := make(map[string]bool)
+	for _, qt := range allQueryTokens {
+		if seenQt[qt] {
+			continue
+		}
+		seenQt[qt] = true
+		tfVal := tf[qt]
+		if tfVal == 0 {
+			continue
+		}
+		df := 1
+		idf := math.Log(1 + (float64(totalDocs)-float64(df)+0.5)/(float64(df)+0.5))
+		bm25Score += idf * (float64(tfVal) * (bm25K1 + 1)) /
+			(float64(tfVal) + bm25K1*(1-bm25B+bm25B*float64(docLen)/avgDocLen))
+	}
+
+	// 额外信号：词干匹配、展开标识符匹配
+	for _, t := range contentTokens {
+		s := stem(t)
+		for _, qs := range queryStems {
+			if s == qs {
+				bm25Score += 0.3
+				break
+			}
+		}
+	}
+	for _, et := range expanded {
+		for _, qe := range queryExpanded {
+			if et == qe {
+				bm25Score += 0.3
+				break
+			}
+		}
+	}
+
+	return bm25Score
+}
+
 // BM25 参数
 const (
 	bm25K1 = 1.5  // 词频饱和参数

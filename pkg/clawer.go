@@ -66,8 +66,8 @@ func NormalizeLimit(limit int) int {
 	if limit <= 0 {
 		return 0
 	}
-	if limit < 12000 {
-		limit = 12000
+	if limit < 2000 {
+		limit = 2000
 	}
 	if limit > 64000 {
 		limit = 64000
