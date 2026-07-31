@@ -13,8 +13,46 @@ import (
 	"golang.org/x/text/encoding/traditionalchinese"
 )
 
-// ScorePage 对整页内容做 BM25 评分，返回与查询的相关性分数。
-// 用于 search 路径中对多个结果页面排序，高分页面分配更多 highlights budget。
+var stopWords = map[string]struct{}{
+	"a": {}, "an": {}, "the": {}, "is": {}, "are": {}, "was": {}, "were": {}, "be": {}, "been": {},
+	"it": {}, "its": {}, "this": {}, "that": {}, "these": {}, "those": {},
+	"in": {}, "on": {}, "at": {}, "to": {}, "for": {}, "of": {}, "with": {}, "by": {}, "from": {},
+	"and": {}, "or": {}, "but": {}, "not": {}, "no": {},
+	"i": {}, "you": {}, "he": {}, "she": {}, "we": {}, "they": {}, "me": {}, "him": {}, "her": {}, "us": {}, "them": {},
+	"my": {}, "your": {}, "his": {}, "their": {}, "our": {},
+	"do": {}, "does": {}, "did": {}, "have": {}, "has": {}, "had": {},
+	"can": {}, "could": {}, "will": {}, "would": {}, "shall": {}, "should": {}, "may": {}, "might": {},
+	"的": {}, "了": {}, "是": {}, "在": {}, "和": {}, "也": {}, "就": {}, "都": {}, "而": {}, "及": {},
+	"与": {}, "着": {}, "或": {}, "一个": {}, "没有": {}, "我们": {}, "你们": {}, "他们": {},
+	"这个": {}, "那个": {}, "这些": {}, "那些": {}, "不": {}, "被": {}, "把": {}, "从": {},
+}
+
+var noisePatterns = []string{
+	"cookie", "privacy policy", "terms of service", "subscribe",
+	"newsletter", "sign up", "sign in", "log in", "log out",
+	"all rights reserved", "copyright", "advertisement", "sponsored",
+	"click here", "read more", "related articles", "you may also like",
+	"share this", "tweet", "facebook", "instagram", "linkedin",
+	"navigation", "menu", "breadcrumb", "skip to content",
+	"table of contents", "on this page", "in this article",
+	"follow us", "contact us", "about us", "search...",
+	"loading", "please enable javascript",
+}
+
+var garbledDecoders = []struct {
+	name string
+	enc  encoding.Encoding
+}{
+	{"gbk", simplifiedchinese.GBK},
+	{"gb2312", simplifiedchinese.HZGB2312},
+	{"big5", traditionalchinese.Big5},
+	{"shift_jis", japanese.ShiftJIS},
+	{"euc_jp", japanese.EUCJP},
+	{"euc_kr", korean.EUCKR},
+	{"iso_8859_1", charmap.ISO8859_1},
+	{"windows_1252", charmap.Windows1252},
+}
+
 func ScorePage(content, query string) float64 {
 	if content == "" || query == "" {
 		return 0
@@ -31,7 +69,6 @@ func ScorePage(content, query string) float64 {
 		return 0
 	}
 
-	// 文档级统计
 	docLen := len(contentTokens)
 	if docLen < 1 {
 		docLen = 1
@@ -51,8 +88,6 @@ func ScorePage(content, query string) float64 {
 		}
 	}
 
-	// 用查询词集合模拟 IDF（假设查询词在 1 个文档中出现，总文档数 10）
-	// 这不是精确 IDF，但足够用于页面间相对排序
 	totalDocs := 10
 	bm25Score := 0.0
 	avgDocLen := 200.0
@@ -76,7 +111,6 @@ func ScorePage(content, query string) float64 {
 			(float64(tfVal) + bm25K1*(1-bm25B+bm25B*float64(docLen)/avgDocLen))
 	}
 
-	// 额外信号：词干匹配、展开标识符匹配
 	for _, t := range contentTokens {
 		s := stem(t)
 		for _, qs := range queryStems {
@@ -98,10 +132,9 @@ func ScorePage(content, query string) float64 {
 	return bm25Score
 }
 
-// BM25 参数
 const (
-	bm25K1 = 1.5  // 词频饱和参数
-	bm25B  = 0.75 // 长度归一化参数
+	bm25K1 = 1.5
+	bm25B  = 0.75
 )
 
 type scoredSentence struct {
@@ -117,14 +150,13 @@ func ExtractHighlights(content, query string, maxTokens int) string {
 
 	sentences := splitSentencesPreservingCode(content)
 
-	// 先尝试修复乱码句子，修复不了才滤除
 	repaired := make([]string, 0, len(sentences))
 	for _, s := range sentences {
 		if isGarbledText(s) {
 			if fixed := tryFixGarbled(s); fixed != "" {
 				repaired = append(repaired, fixed)
 			}
-			// 修复不了则丢弃
+
 		} else {
 			repaired = append(repaired, s)
 		}
@@ -144,19 +176,13 @@ func ExtractHighlights(content, query string, maxTokens int) string {
 	queryBigrams := buildBigrams(queryTokens)
 	queryExpanded := expandIdentifierTokens(queryTokens)
 
-	isCodeQ := isCodeQuery(query)
-	isSymbolQ := isSymbolQuery(query)
-	_ = isCodeQ
-	_ = isSymbolQ
-
-	// 统计全局 IDF 所需的文档级统计量
 	type docStats struct {
 		length int
-		tf     map[string]int // term frequency in this sentence
+		tf     map[string]int
 	}
 	sentenceStats := make([]docStats, len(sentences))
 	totalDocs := len(sentences)
-	docFreq := make(map[string]int) // 包含该 term 的句子数
+	docFreq := make(map[string]int)
 	for i, s := range sentences {
 		tokens := tokenize(s)
 		stats := docStats{length: len(tokens), tf: make(map[string]int)}
@@ -168,7 +194,7 @@ func ExtractHighlights(content, query string, maxTokens int) string {
 				docFreq[t]++
 			}
 		}
-		// 也计入展开后的标识符
+
 		expanded := expandIdentifierTokens(tokens)
 		for _, et := range expanded {
 			if !seen[et] {
@@ -189,14 +215,12 @@ func ExtractHighlights(content, query string, maxTokens int) string {
 		avgDocLen = 1
 	}
 
-	// BM25 评分 + 重排序信号
 	scored := make([]scoredSentence, len(sentences))
 	maxBM25 := 0.0
 	for i, s := range sentences {
 		tokens := tokenize(s)
 		expanded := expandIdentifierTokens(tokens)
 
-		// BM25 核心评分
 		bm25Score := 0.0
 		allQueryTokens := append([]string{}, queryTokens...)
 		allQueryTokens = append(allQueryTokens, queryExpanded...)
@@ -224,7 +248,6 @@ func ExtractHighlights(content, query string, maxTokens int) string {
 				(float64(tf) + bm25K1*(1-bm25B+bm25B*float64(docLen)/float64(avgDocLen)))
 		}
 
-		// 额外信号：bigram 匹配、词干匹配、展开标识符匹配
 		bigramHits := countBigramHits(tokens, queryBigrams)
 		stemHits := countStemHits(tokens, queryStems)
 		expandedHits := countHits(expanded, queryExpanded)
@@ -294,42 +317,6 @@ func ExtractHighlights(content, query string, maxTokens int) string {
 	return b.String()
 }
 
-// isSymbolQuery 检测查询是否为符号/标识符查询（如 Foo::bar, getUserById）
-func isSymbolQuery(query string) bool {
-	q := strings.ToLower(query)
-	parts := strings.Fields(q)
-	if len(parts) == 0 {
-		return false
-	}
-	symbolCount := 0
-	for _, p := range parts {
-		// 包含特殊符号
-		if strings.ContainsAny(p, "::->._") {
-			symbolCount++
-			continue
-		}
-		// camelCase 检测
-		hasUpper := false
-		hasLower := false
-		for _, r := range p {
-			if unicode.IsUpper(r) {
-				hasUpper = true
-			}
-			if unicode.IsLower(r) {
-				hasLower = true
-			}
-		}
-		if hasUpper && hasLower {
-			symbolCount++
-			continue
-		}
-	}
-	// 过半 token 是符号形式
-	return len(parts) > 0 && float64(symbolCount)/float64(len(parts)) >= 0.5
-}
-
-// expandIdentifierTokens 展开 camelCase/snake_case 标识符为子 token
-// 例如: "parseConfig" → ["parse", "config"], "config_parser" → ["config", "parser"]
 func expandIdentifierTokens(tokens []string) []string {
 	if len(tokens) == 0 {
 		return nil
@@ -337,7 +324,7 @@ func expandIdentifierTokens(tokens []string) []string {
 	seen := make(map[string]bool)
 	var result []string
 	for _, t := range tokens {
-		// snake_case
+
 		if strings.Contains(t, "_") {
 			parts := strings.Split(t, "_")
 			for _, p := range parts {
@@ -349,7 +336,7 @@ func expandIdentifierTokens(tokens []string) []string {
 			}
 			continue
 		}
-		// camelCase / PascalCase
+
 		expanded := splitCamelCase(t)
 		for _, p := range expanded {
 			p = strings.ToLower(p)
@@ -362,8 +349,6 @@ func expandIdentifierTokens(tokens []string) []string {
 	return result
 }
 
-// splitCamelCase 将 camelCase/PascalCase 拆分为子词
-// "parseConfig" → ["parse", "Config"], "XMLParser" → ["XML", "Parser"]
 func splitCamelCase(word string) []string {
 	if word == "" {
 		return nil
@@ -374,10 +359,9 @@ func splitCamelCase(word string) []string {
 	for i, r := range runes {
 		if unicode.IsUpper(r) {
 			if buf.Len() > 0 {
-				// 处理连续大写缩写: "XMLParser" → "XML" + "Parser"
+
 				if buf.Len() > 1 && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
-					// 前一个字符是大写，当前也是大写，下一个是小写
-					// 说明前面是缩写，当前是新的词开始
+
 					prev := buf.String()
 					short := prev[:len(prev)-1]
 					if short != "" {
@@ -665,44 +649,8 @@ func countStemHits(sentenceTokens, queryStems []string) int {
 	return hits
 }
 
-func isCodeQuery(query string) bool {
-	codeIndicators := []string{
-		"::", "->", "=>", "func ", "func(", "def ", "class ", "import ",
-		"package ", "fn ", "fn(", "function ", "var ", "let ", "const ",
-		"type ", "interface ", "struct ", "enum ", "trait ",
-		".go", ".rs", ".py", ".js", ".ts", ".c", ".h", ".cpp",
-		"()", "[]", "{}",
-	}
-	q := strings.ToLower(query)
-	for _, ind := range codeIndicators {
-		if strings.Contains(q, ind) {
-			return true
-		}
-	}
-	parts := strings.Fields(q)
-	for _, p := range parts {
-		if strings.Contains(p, "_") || strings.Contains(p, ".") {
-			return true
-		}
-		hasUpper := false
-		hasLower := false
-		for _, r := range p {
-			if unicode.IsUpper(r) {
-				hasUpper = true
-			}
-			if unicode.IsLower(r) {
-				hasLower = true
-			}
-		}
-		if hasUpper && hasLower {
-			return true
-		}
-	}
-	return false
-}
-
 func isGarbledText(s string) bool {
-	// 检测 U+FFFD replacement character — 明确表示编码错误
+
 	if strings.ContainsRune(s, '\uFFFD') {
 		return true
 	}
@@ -718,7 +666,7 @@ func isGarbledText(s string) bool {
 
 	for _, r := range runes {
 		if r > 0x7F && r < 0xA0 {
-			highBytes++ // ISO-8859-1 控制字符区域
+			highBytes++
 		}
 		if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) ||
 			unicode.Is(unicode.Katakana, r) || unicode.Is(unicode.Hangul, r) {
@@ -729,12 +677,10 @@ func isGarbledText(s string) bool {
 		}
 	}
 
-	// 高位字节占比 > 30% 且无 CJK → 很可能是 Latin-1 被误解析为 UTF-8
 	if float64(highBytes)/float64(len(runes)) > 0.3 && cjkRunes == 0 {
 		return true
 	}
 
-	// 不可打印字符占比 > 10%
 	if float64(nonPrintable)/float64(len(runes)) > 0.1 {
 		return true
 	}
@@ -742,17 +688,14 @@ func isGarbledText(s string) bool {
 	return false
 }
 
-// tryFixGarbled 尝试用常见编码重新解码乱码文本。
-// 将当前文本视为 Latin-1 编码的字节序列，尝试用其他编码重新解释。
-// 返回修复后的文本，若无法修复则返回空字符串。
 func tryFixGarbled(s string) string {
-	// 将当前 UTF-8 字符串转回原始字节（假设它是被误解析的 Latin-1）
+
 	raw := make([]byte, 0, len(s))
 	for _, r := range s {
 		if r <= 0xFF {
 			raw = append(raw, byte(r))
 		} else {
-			// 包含有效多字节 UTF-8 字符，不是单纯的编码错误
+
 			return ""
 		}
 	}
@@ -761,28 +704,13 @@ func tryFixGarbled(s string) string {
 		return ""
 	}
 
-	// 按优先级尝试各编码解码
-	decoders := []struct {
-		name string
-		enc  encoding.Encoding
-	}{
-		{"gbk", simplifiedchinese.GBK},
-		{"gb2312", simplifiedchinese.HZGB2312},
-		{"big5", traditionalchinese.Big5},
-		{"shift_jis", japanese.ShiftJIS},
-		{"euc_jp", japanese.EUCJP},
-		{"euc_kr", korean.EUCKR},
-		{"iso_8859_1", charmap.ISO8859_1},
-		{"windows_1252", charmap.Windows1252},
-	}
-
-	for _, d := range decoders {
+	for _, d := range garbledDecoders {
 		decoded, err := d.enc.NewDecoder().Bytes(raw)
 		if err != nil {
 			continue
 		}
 		result := string(decoded)
-		// 解码后不再乱码才算修复成功
+
 		if !isGarbledText(result) {
 			return result
 		}
@@ -793,17 +721,6 @@ func tryFixGarbled(s string) string {
 
 func isNoiseSentence(s string) bool {
 	low := strings.ToLower(s)
-	noisePatterns := []string{
-		"cookie", "privacy policy", "terms of service", "subscribe",
-		"newsletter", "sign up", "sign in", "log in", "log out",
-		"all rights reserved", "copyright", "advertisement", "sponsored",
-		"click here", "read more", "related articles", "you may also like",
-		"share this", "tweet", "facebook", "instagram", "linkedin",
-		"navigation", "menu", "breadcrumb", "skip to content",
-		"table of contents", "on this page", "in this article",
-		"follow us", "contact us", "about us", "search...",
-		"loading", "please enable javascript",
-	}
 	for _, p := range noisePatterns {
 		if strings.Contains(low, p) {
 			return true
@@ -821,21 +738,8 @@ func containsCodeBlock(s string) bool {
 }
 
 func isStopWord(w string) bool {
-	switch w {
-	case "a", "an", "the", "is", "are", "was", "were", "be", "been",
-		"it", "its", "this", "that", "these", "those",
-		"in", "on", "at", "to", "for", "of", "with", "by", "from",
-		"and", "or", "but", "not", "no",
-		"i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them",
-		"my", "your", "his", "their", "our",
-		"do", "does", "did", "have", "has", "had",
-		"can", "could", "will", "would", "shall", "should", "may", "might",
-		"的", "了", "是", "在", "和", "也", "就", "都", "而", "及",
-		"与", "着", "或", "一个", "没有", "我们", "你们", "他们",
-		"这个", "那个", "这些", "那些", "不", "被", "把", "从":
-		return true
-	}
-	return false
+	_, ok := stopWords[w]
+	return ok
 }
 
 func countHits(sentenceTokens, queryTokens []string) int {
@@ -851,23 +755,6 @@ func countHits(sentenceTokens, queryTokens []string) int {
 		hits += set[q]
 	}
 	return hits
-}
-
-func countUniqueMatches(sentenceTokens, queryTokens []string) int {
-	if len(sentenceTokens) == 0 || len(queryTokens) == 0 {
-		return 0
-	}
-	set := make(map[string]bool, len(sentenceTokens))
-	for _, t := range sentenceTokens {
-		set[t] = true
-	}
-	matches := 0
-	for _, q := range queryTokens {
-		if set[q] {
-			matches++
-		}
-	}
-	return matches
 }
 
 func buildBigrams(tokens []string) []string {

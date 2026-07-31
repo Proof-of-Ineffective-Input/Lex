@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,16 +16,21 @@ import (
 	"mcp-search-duckduckgo/pkg"
 )
 
+// ---- 变量结构前置：常量、参数结构、结果结构、声明式工具注册表 ----
+
 const (
 	defaultFetchLimit    = 2000
 	highlightsFullBudget = 3000
 )
 
+// SearchArgs 是 web_search_lex 的输入参数。
+// schema 由 SDK 从 jsonschema tag 自动推断，无需手写 JSON。
 type SearchArgs struct {
 	Query      string `json:"query" jsonschema:"Search keywords (use English keywords for better reliability)"`
 	MaxResults int    `json:"max_results,omitempty" jsonschema:"Number of results to return. Clamped to [5, 50]. Recommended: 10-20 for balanced speed and coverage (default 10)"`
 }
 
+// FetchArgs 是 web_fetch_lex 的输入参数。
 type FetchArgs struct {
 	URLs map[string]int `json:"urls" jsonschema:"Map of target URLs to character limits per page. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 2000 for quick extraction (~500 tokens), 8000 for standard read, 16000 for comprehensive content."`
 }
@@ -39,67 +43,46 @@ type searchResult struct {
 	Score      float64
 }
 
+// toolSpec 声明式工具定义：名称、描述、注册闭包。
+// 闭包捕获各自类型的 handler，name/desc 由参数复用，避免重复。
+type toolSpec struct {
+	name string
+	desc string
+	reg  func(s *mcp.Server, name, desc string)
+}
+
+// tools 声明式工具注册表 —— 新增工具只需在此追加一项。
+var tools = []toolSpec{
+	{
+		name: "web_search_lex",
+		desc: "Search DuckDuckGo Lite, fetch each result page, extract query-relevant highlights via BM25 re-ranking, and return structured results with markdown rendering. Also callable as 'search' or 'web_search'. Top-ranked pages get full highlights; lower-ranked pages get condensed highlights.",
+		reg: func(s *mcp.Server, name, desc string) {
+			mcp.AddTool[SearchArgs, any](s, &mcp.Tool{Name: name, Description: desc}, searchHandler)
+		},
+	},
+	{
+		name: "web_fetch_lex",
+		desc: "Fetch URL content via direct HTML-to-Markdown conversion with optional character limits per URL. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Also callable as 'fetch' or 'web_fetch'.",
+		reg: func(s *mcp.Server, name, desc string) {
+			mcp.AddTool[FetchArgs, any](s, &mcp.Tool{Name: name, Description: desc}, fetchHandler)
+		},
+	},
+}
+
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.3.3"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.4.0"}, nil)
 
-	s.AddTool(&mcp.Tool{
-		Name:        "web_search_lex",
-		Description: "Search DuckDuckGo Lite, fetch each result page, extract query-relevant highlights via BM25 re-ranking, and return structured results with markdown rendering. Also callable as 'search' or 'web_search'. Top-ranked pages get full highlights; lower-ranked pages get condensed highlights.",
-		InputSchema: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"query": {
-					"type": "string",
-					"description": "Search keywords (use English keywords for better reliability)"
-				},
-				"max_results": {
-					"type": "integer",
-					"description": "Maximum number of results to return (default 10, max 50)"
-				}
-			},
-			"required": ["query"]
-		}`),
-	}, searchHandler)
-
-	s.AddTool(&mcp.Tool{
-		Name:        "web_fetch_lex",
-		Description: "Fetch URL content via direct HTML-to-Markdown conversion with optional character limits per URL. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Also callable as 'fetch' or 'web_fetch'.",
-		InputSchema: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"urls": {
-					"type": "object",
-					"description": "Map of target URLs to character limits per page. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 2000 for quick extraction (~500 tokens), 8000 for standard read, 16000 for comprehensive content.",
-					"additionalProperties": {
-						"type": "integer"
-					}
-				}
-			},
-			"required": ["urls"]
-		}`),
-	}, fetchHandler)
+	for _, t := range tools {
+		t.reg(s, t.name, t.desc)
+	}
 
 	if err := s.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		panic(err)
 	}
 }
 
-func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var args SearchArgs
-	raw, err := json.Marshal(req.Params.Arguments)
-	if err != nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to marshal arguments: %v", err)}},
-			IsError: true,
-		}, nil
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
-			IsError: true,
-		}, nil
-	}
-
+// searchHandler 由 SDK 自动完成参数 unmarshal 与校验。
+func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArgs) (*mcp.CallToolResult, any, error) {
 	maxResults := args.MaxResults
 	if maxResults <= 0 {
 		maxResults = 10
@@ -122,7 +105,7 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 			IsError: true,
-		}, nil
+		}, nil, nil
 	}
 	defer resp.Body.Close()
 
@@ -131,7 +114,7 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 			IsError: true,
-		}, nil
+		}, nil, nil
 	}
 
 	var results []searchResult
@@ -156,7 +139,7 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 	if len(results) == 0 {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: "No results found."}},
-		}, nil
+		}, nil, nil
 	}
 
 	if len(results) > maxResults {
@@ -215,8 +198,6 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 		}
 	}
 
-	// 按原始 DDG 顺序还原（可选：保持 DDG 排序更自然）
-	// 这里保持评分排序，让用户先看到最相关的结果
 	var sb strings.Builder
 	for i, r := range results {
 		if i > 0 {
@@ -230,30 +211,16 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallTool
 
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: sb.String()}},
-	}, nil
+	}, nil, nil
 }
 
-func fetchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var args FetchArgs
-	raw, err := json.Marshal(req.Params.Arguments)
-	if err != nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("failed to marshal arguments: %v", err)}},
-			IsError: true,
-		}, nil
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("invalid arguments: %v", err)}},
-			IsError: true,
-		}, nil
-	}
-
+// fetchHandler 由 SDK 自动完成参数 unmarshal 与校验。
+func fetchHandler(ctx context.Context, req *mcp.CallToolRequest, args FetchArgs) (*mcp.CallToolResult, any, error) {
 	if len(args.URLs) == 0 {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: "no url provided"}},
 			IsError: true,
-		}, nil
+		}, nil, nil
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -299,5 +266,5 @@ func fetchHandler(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolR
 
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: sb.String()}},
-	}, nil
+	}, nil, nil
 }
