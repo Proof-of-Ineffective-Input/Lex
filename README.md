@@ -2,19 +2,18 @@
 
 A Go-based MCP server providing DuckDuckGo search and web scraping — a zero-overhead local Exa alternative.
 
-Unlike other DDG MCP servers that return only snippets and force a second `fetch` call, `Lex` embeds full-page content extraction directly into each search result via heuristic sentence re-ranking. No external API, no browser, no RAG pipeline.
+Unlike other DDG MCP servers that return only snippets and force a second `fetch` call, Lex embeds full-page content extraction directly into each search result via heuristic sentence re-ranking. No external API, no browser, no RAG pipeline.
 
-## Tools
-
-- `search` — Search DuckDuckGo Lite, concurrently fetch each result page, extract query-relevant highlights, return structured markdown
-- `fetch` — Fetch URL content via direct HTML-to-Markdown conversion with configurable character limits
-
-## Why Lex
+## Features
 
 - `One-shot search` — returns real page highlights, not just snippets
 - `Zero-overhead extraction` — no browser, no external API, no vector DB, no RAG
-- `Content-aware` — auto-detects `<main>`, `<article>`, `[role=main]` and other containers
-- `Concurrent by design` — up to 5 parallel fetches, 15s timeout, graceful snippet fallback
+- `BM25 re-ranking` — page-level scoring with tiered highlight budgets (top half full, bottom half half)
+- `Content-aware` — probes `<main>` / `<article>` / `[role=main]` containers by priority
+- `Robust encoding` — automatic charset detection and garbled-text repair (GBK/Big5/Shift-JIS, etc.)
+- `YouTube bypass` — detects video links, extracts transcripts and comments via oEmbed + yt-dlp
+- `Built-in cache` — LRU 256 entries / 5-minute TTL, repeated fetches cost nothing
+- `Concurrent by design` — 8-way semaphore parallelism, graceful fallback to original snippets
 
 ## Install
 
@@ -25,7 +24,7 @@ go build -o lex.exe .
 
 ## Usage
 
-Add to MCP client config:
+Register in your MCP client config:
 
 ```json
 {
@@ -37,53 +36,53 @@ Add to MCP client config:
 }
 ```
 
-### `search`
+### `web_search_lex`
+
+Also callable as `search` / `web_search`.
 
 ```json
-{ "query": "Go 1.24 Swiss Table map performance" }
+{ "query": "Go 1.24 Swiss Table map performance", "max_results": 10 }
 ```
 
-Returns `Title`, `URL`, `Snippet`, and `Highlights` in markdown.
+- `max_results` clamped to `[5, 50]`, defaults to 10
+- Returns `Title` / `URL` / `Snippet` / `Highlights` in markdown
+- Fetches all pages concurrently → BM25 page scoring → top half gets full highlight budget (3000 tokens), bottom half gets half
 
-### `fetch`
+### `web_fetch_lex`
+
+Also callable as `fetch` / `web_fetch`.
 
 ```json
 { "urls": { "https://example.com/article": 16000 } }
 ```
 
-Per-URL character limits clamped to `[2000, 64000]`, rounded to nearest 1000.
+- Per-URL character limits clamped to `[2000, 64000]`, rounded to nearest 1000; `0` means no truncation
+- URLs sorted then fetched concurrently; failed items are annotated individually without breaking the batch
 
-## How Highlights Work
+## How It Works
 
 ```mermaid
 flowchart LR
   A["DDG Lite HTML"] --> B["parse results"]
-  B --> C["concurrent fetch (x5)"]
+  B --> C["concurrent fetch (x8)"]
   C --> D["HTML-to-Markdown"]
   D --> E["content area extraction"]
-  E --> F["sentence split + tokenize"]
-  F --> G["keyword scoring"]
-  G --> H["top-sentence select"]
-  H --> I["highlights"]
+  E --> F["charset detect + garbled repair"]
+  F --> G["BM25 page scoring"]
+  G --> H["tiered highlight budget"]
+  H --> I["structured results"]
 ```
 
-Scoring formula: `hit_rate * 0.5 + hit_count_norm * 0.3 + position_bonus * 0.2`. ~100 lines of pure Go, zero ML.
+The BM25 engine layers identifier expansion (snake_case / camelCase splitting), stem matching, noise-sentence penalties, and code-block preservation — pure Go, zero ML.
 
-## Tech
+## Tech Stack
 
 - Go 1.25+
-- `go-sdk/mcp` — MCP Go SDK
-- `goquery` — HTML parsing & content extraction
+- `go-sdk/mcp` — MCP Go SDK (declarative tool registry, schema inferred from jsonschema tags)
+- `goquery` — HTML parsing and content extraction
 - `html-to-markdown` — HTML to Markdown conversion
-
-## Implementation Details
-
-- Uses DuckDuckGo Lite (`lite.duckduckgo.com`) — no API key, no rate limit worries
-- `search` concurrently fetches each result page (concurrency: 5, timeout: 15s)
-- Content area extraction via ordered selectors: `<main>` → `<article>` → `[role=main]` → `.post-content` → `.content` → `#content`
-- Highlights budget: 4000 characters per page, whole-sentence boundaries
-- Graceful degradation: failed page fetches fall back to original snippet
-- `fetch` supports per-URL character limits, clamped to `[2000, 64000]`, rounded to nearest 1000
+- `golang-lru/v2` — expirable LRU cache
+- `x/net/html/charset` — charset detection and decoding
 
 ## License
 
