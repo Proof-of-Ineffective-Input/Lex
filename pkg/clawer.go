@@ -14,6 +14,8 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"golang.org/x/net/html/charset"
+
+	"mcp-search-duckduckgo/pkg/hook"
 )
 
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/[IP] Safari/537.36"
@@ -142,6 +144,16 @@ func FetchSingle(ctx context.Context, client *http.Client, target string, limit 
 	cache := getCache()
 	if cached, ok := cache.Get(cacheKey); ok {
 		return cached, nil
+	}
+
+	// YouTube 旁路：命中则走 ytb hook，否则走原 HTML→Markdown 流程。
+	if hook.ExtractVideoID(target) != "" {
+		result, err := hook.Fetch(ctx, client, target, limit)
+		if err != nil {
+			return "", err
+		}
+		cache.Add(cacheKey, result)
+		return result, nil
 	}
 
 	data, contentType, err := ReadURL(ctx, client, target)

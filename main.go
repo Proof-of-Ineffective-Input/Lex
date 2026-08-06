@@ -70,7 +70,7 @@ var tools = []toolSpec{
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.4.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.5.0"}, nil)
 
 	for _, t := range tools {
 		t.reg(s, t.name, t.desc)
@@ -87,12 +87,7 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArg
 	if maxResults <= 0 {
 		maxResults = 10
 	}
-	if maxResults < 5 {
-		maxResults = 5
-	}
-	if maxResults > 50 {
-		maxResults = 50
-	}
+	maxResults = min(max(maxResults, 5), 50)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	u := fmt.Sprintf("https://lite.duckduckgo.com/lite/?q=%s", url.QueryEscape(args.Query))
