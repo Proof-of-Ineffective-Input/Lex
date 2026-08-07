@@ -23,19 +23,16 @@ func TestRerankByCharsWithQuery(t *testing.T) {
 		"The capital gains tax is a major policy debate. " +
 		"Please subscribe for more videos. " +
 		"Land value taxation affects property owners."
-	// 预算收紧到只能容纳 2 个短句，验证 rerank 优先保留 query 相关句子
 	out := RerankByChars(content, "capital gains tax land value", 120)
 	if out == "" {
 		t.Fatal("expected non-empty output")
 	}
-	// query 相关句子应被优先保留
 	if !strings.Contains(out, "capital gains tax") {
 		t.Errorf("query-relevant sentence should be kept, got: %q", out)
 	}
 	if !strings.Contains(out, "Land value") {
 		t.Errorf("query-relevant sentence should be kept, got: %q", out)
 	}
-	// 客套话（welcome/subscribe）在预算紧张时应被过滤
 	if strings.Contains(out, "Welcome back") {
 		t.Errorf("greeting should be filtered under tight budget, got: %q", out)
 	}
@@ -66,5 +63,60 @@ func TestScorePage(t *testing.T) {
 	low := ScorePage("cooking recipes pasta tomato", "tax land")
 	if high <= low {
 		t.Errorf("relevant page should score higher: high=%v low=%v", high, low)
+	}
+}
+
+func TestDedupeExactDuplicate(t *testing.T) {
+	in := []string{"The capital gains tax is a major policy debate.", "The capital gains tax is a major policy debate."}
+	out := dedupeSentences(in)
+	if len(out) != 1 {
+		t.Errorf("exact duplicate should collapse to 1, got %d: %v", len(out), out)
+	}
+}
+
+func TestDedupeNearDuplicate(t *testing.T) {
+	in := []string{
+		"The capital gains tax is a major policy debate.",
+		"The capital gains tax is a major policy debate!",
+	}
+	out := dedupeSentences(in)
+	if len(out) != 1 {
+		t.Errorf("near-duplicate (punctuation diff) should collapse to 1, got %d: %v", len(out), out)
+	}
+}
+
+func TestDedupeKeepsDistinct(t *testing.T) {
+	in := []string{
+		"The capital gains tax is a major policy debate.",
+		"Land value taxation affects property owners.",
+	}
+	out := dedupeSentences(in)
+	if len(out) != 2 {
+		t.Errorf("distinct sentences should be kept, got %d: %v", len(out), out)
+	}
+}
+
+func TestDedupeKeepsFirstOrder(t *testing.T) {
+	in := []string{
+		"First unique sentence about taxes.",
+		"Second unique sentence about land.",
+		"First unique sentence about taxes.",
+	}
+	out := dedupeSentences(in)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 after dedupe, got %d: %v", len(out), out)
+	}
+	if out[0] != in[0] || out[1] != in[1] {
+		t.Errorf("order should preserve first occurrences, got: %v", out)
+	}
+}
+
+func TestDedupeRerankIntegration(t *testing.T) {
+	content := "The capital gains tax is a major policy debate. " +
+		"The capital gains tax is a major policy debate. " +
+		"Land value taxation affects property owners."
+	out := RerankByChars(content, "capital gains tax land value", 200)
+	if strings.Count(out, "capital gains tax is a major policy debate") != 1 {
+		t.Errorf("duplicate sentence should appear once in rerank output, got: %q", out)
 	}
 }

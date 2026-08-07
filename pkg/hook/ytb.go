@@ -1,6 +1,3 @@
-// Package hook 提供 FetchSingle 的旁路钩子。
-// ytb.go 是 YouTube 旁路：oEmbed 拿基础元数据（零依赖、极稳），
-// yt-dlp 拿字幕与评论（失败降级只返回元数据 + 给调用方 AI 的提示）。
 package hook
 
 import (
@@ -19,17 +16,14 @@ import (
 	"time"
 )
 
-// videoIDRe 匹配各种 YouTube URL 形式并提取 11 位视频 ID。
 var videoIDRe = regexp.MustCompile(`(?:youtube\.com/(?:watch\?v=|shorts/|embed/|live/|v/)|youtu\.be/)([A-Za-z0-9_-]{11})`)
 
-// oembed 是 YouTube oEmbed 端点的响应结构。
 type oembed struct {
 	Title      string `json:"title"`
 	AuthorName string `json:"author_name"`
 	AuthorURL  string `json:"author_url"`
 }
 
-// videoDetails 是 watch 页 ytInitialPlayerResponse 中 videoDetails 的字段。
 type videoDetails struct {
 	LengthSeconds    string `json:"lengthSeconds"`
 	ViewCount        string `json:"viewCount"`
@@ -37,12 +31,10 @@ type videoDetails struct {
 	ShortDescription string `json:"shortDescription"`
 }
 
-// ytInitialPlayerResponse 是 watch 页内嵌 JSON 的顶层结构。
 type ytInitialPlayerResponse struct {
 	VideoDetails videoDetails `json:"videoDetails"`
 }
 
-// ytdlpInfo 是 yt-dlp --dump-single-json 输出的关键字段。
 type ytdlpInfo struct {
 	Uploader    string         `json:"uploader"`
 	Duration    float64        `json:"duration"`
@@ -53,7 +45,6 @@ type ytdlpInfo struct {
 	Comments    []ytdlpComment `json:"comments"`
 }
 
-// ytdlpComment 是 yt-dlp 评论条目。
 type ytdlpComment struct {
 	Author    string  `json:"author"`
 	Text      string  `json:"text"`
@@ -61,11 +52,8 @@ type ytdlpComment struct {
 	IsPinned  bool    `json:"is_pinned"`
 }
 
-// ytInitialPlayerResponseRe 匹配 watch 页内嵌的 ytInitialPlayerResponse JSON。
 var ytInitialPlayerResponseRe = regexp.MustCompile(`ytInitialPlayerResponse\s*=\s*(\{.*?\});`)
 
-// Fetch 抓取一个 YouTube 视频，返回类 exa 的 plain text。
-// 任何一层失败都降级，不整体报错；仅当连 oEmbed 都失败时才返回错误。
 func Fetch(ctx context.Context, client *http.Client, target string, limit int) (string, error) {
 	id := ExtractVideoID(target)
 	if id == "" {
@@ -74,7 +62,6 @@ func Fetch(ctx context.Context, client *http.Client, target string, limit int) (
 
 	var sb strings.Builder
 
-	// L0: oEmbed 元数据（必失败则整体失败）
 	meta, err := fetchOEmbed(ctx, client, id)
 	if err != nil {
 		return "", err
@@ -85,7 +72,6 @@ func Fetch(ctx context.Context, client *http.Client, target string, limit int) (
 		sb.WriteString(fmt.Sprintf("Channel URL: %s\n", meta.AuthorURL))
 	}
 
-	// L1: 增强元数据（duration/views/published），失败不影响
 	enhanced, _ := fetchEnhanced(ctx, client, target)
 	if enhanced != nil {
 		if enhanced.LengthSeconds != "" {
@@ -100,36 +86,28 @@ func Fetch(ctx context.Context, client *http.Client, target string, limit int) (
 	}
 	sb.WriteString(fmt.Sprintf("URL: %s\n", target))
 
-	// L2+L3: yt-dlp 拿字幕与评论（两条独立命令，避免 --dump-single-json 吞掉字幕文件）
 	transcript, comments, description, ytErr := ytdlpFetch(ctx, id)
 	if ytErr != nil {
-		// 无 yt-dlp 或抓取失败：返回元数据 + 写给调用方 AI 的提示
 		sb.WriteString("\n\n---\n")
 		sb.WriteString(ytErr.Error())
 		return sb.String(), nil
 	}
 
-	// limit 分配：元数据不计入；transcript 拿 2/3，discussion 拿 1/3。
-	// limit<=0 表示不截断。
 	transcriptBudget, discussionBudget := splitBudget(limit)
 
 	if transcript != "" {
 		sb.WriteString("\n\nTranscript:\n")
-		// 用标题+描述当 query 对 transcript 做 BM25 rerank，过滤开头结尾客套话/广告。
 		query := strings.TrimSpace(meta.Title + " " + description)
 		sb.WriteString(rerank.RerankByChars(transcript, query, transcriptBudget))
 	}
 	if len(comments) > 0 {
 		sb.WriteString("\n\nDiscussion:\n")
-		// discussion 不 rerank，直接截断，避免偏见放大效应。
 		sb.WriteString(Truncate(formatComments(comments), discussionBudget))
 	}
 
 	return sb.String(), nil
 }
 
-// splitBudget 把 limit 拆成 transcript 2/3 与 discussion 1/3。
-// limit<=0 返回 (0,0)，表示不截断。
 func splitBudget(limit int) (transcript, discussion int) {
 	if limit <= 0 {
 		return 0, 0
@@ -137,7 +115,6 @@ func splitBudget(limit int) (transcript, discussion int) {
 	return limit * 2 / 3, limit / 3
 }
 
-// formatComments 把评论列表格式化为多行文本。
 func formatComments(comments []ytdlpComment) string {
 	var b strings.Builder
 	for i, c := range comments {
@@ -149,7 +126,6 @@ func formatComments(comments []ytdlpComment) string {
 	return b.String()
 }
 
-// ExtractVideoID 从任意 YouTube URL 提取 11 位视频 ID，失败返回空串。
 func ExtractVideoID(target string) string {
 	m := videoIDRe.FindStringSubmatch(target)
 	if len(m) < 2 {
@@ -158,7 +134,6 @@ func ExtractVideoID(target string) string {
 	return m[1]
 }
 
-// fetchOEmbed 调用 YouTube oEmbed 端点拿基础元数据。
 func fetchOEmbed(ctx context.Context, client *http.Client, id string) (*oembed, error) {
 	u := fmt.Sprintf("https://www.youtube.com/oembed?format=json&url=%s",
 		url.QueryEscape("https://www.youtube.com/watch?v="+id))
@@ -182,7 +157,6 @@ func fetchOEmbed(ctx context.Context, client *http.Client, id string) (*oembed, 
 	return &m, nil
 }
 
-// fetchEnhanced 抓 watch 页并提取 ytInitialPlayerResponse 中的增强元数据。
 func fetchEnhanced(ctx context.Context, client *http.Client, target string) (*videoDetails, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", target, nil)
 	if err != nil {
@@ -209,44 +183,88 @@ func fetchEnhanced(ctx context.Context, client *http.Client, target string) (*vi
 	return &pr.VideoDetails, nil
 }
 
-// dlErr 表示 yt-dlp 层失败，携带给调用方 AI 的提示。
 type dlErr struct {
 	msg string
 }
 
 func (e *dlErr) Error() string { return e.msg }
 
-// dlErrNoYtDlp 是 yt-dlp 未安装时的提示，写给调用方 AI（而非用户）。
 const dlErrNoYtDlp = `[ytb] 检测到系统未安装 yt-dlp，无法获取字幕与评论，仅返回元数据。
 请通知用户安装并配置 yt-dlp 以启用完整功能：
   - 安装：https://github.com/yt-dlp/yt-dlp/releases （或 pip install yt-dlp）
-  - 若需访问会员/年龄限制视频，请配置 cookies（yt-dlp --cookies cookies.txt）`
+  - 若需访问会员/年龄限制视频，请配置浏览器 cookies（yt-dlp --cookies-from-browser <browser>）`
 
-// dlErrNoSubs 表示字幕与评论均不可用（如无字幕、需登录、风控）。
 const dlErrNoSubs = "[yt-dlp] 未能获取字幕与评论（可能无字幕、需登录或触发风控），仅返回元数据。"
 
-// defaultCookiesPath 返回通用回退 cookies 路径：{userprofile}/.lex/cookies.txt。
-// 读取失败返回 ""，调用方据此时决定是否省略 --cookies。
-func defaultCookiesPath() string {
+var supportedBrowsers = []string{
+	"edge", "chrome", "chromium", "firefox", "brave", "opera", "vivaldi", "whale", "safari",
+}
+
+var statePath = func() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".lex", "cookies.txt")
+	return filepath.Join(home, ".lex", "ytb-browser.txt")
 }
 
-// cookiesPath 解析 yt-dlp 的 cookies 文件路径：
-// 1. 环境变量 LEX_YT_COOKIES 优先（显式指定）
-// 2. 回退到 {userprofile}/.lex/cookies.txt
-// 返回 "" 表示无可用 cookies。
-func cookiesPath() string {
-	if p := os.Getenv("LEX_YT_COOKIES"); p != "" {
-		return p
+func isSupportedBrowser(name string) bool {
+	for _, b := range supportedBrowsers {
+		if name == b {
+			return true
+		}
 	}
-	return defaultCookiesPath()
+	return false
 }
 
-// newDlErr 构造 yt-dlp 执行失败的错误，附带 stderr 摘要。
+func saveLastBrowser(name string) {
+	p := statePath()
+	if p == "" || !isSupportedBrowser(name) {
+		return
+	}
+	_ = os.WriteFile(p, []byte(name), 0o600)
+}
+
+func loadLastBrowser() string {
+	p := statePath()
+	if p == "" {
+		return ""
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	name := strings.TrimSpace(string(data))
+	if !isSupportedBrowser(name) {
+		return ""
+	}
+	return name
+}
+
+func browserRetryOrder() []string {
+	var order []string
+	add := func(name string) {
+		if name == "" || !isSupportedBrowser(name) {
+			return
+		}
+		for _, b := range order {
+			if b == name {
+				return
+			}
+		}
+		order = append(order, name)
+	}
+	if b := os.Getenv("LEX_YT_BROWSER"); b != "" {
+		add(b)
+	}
+	add(loadLastBrowser())
+	for _, b := range supportedBrowsers {
+		add(b)
+	}
+	order = append(order, "")
+	return order
+}
+
 func newDlErr(stderr string) *dlErr {
 	msg := "[yt-dlp] 抓取字幕/评论失败，仅返回元数据。"
 	if s := strings.TrimSpace(stderr); s != "" {
@@ -258,9 +276,58 @@ func newDlErr(stderr string) *dlErr {
 	return &dlErr{msg: msg}
 }
 
-// ytdlpFetch 调用 yt-dlp 拿字幕与评论（两条独立命令）。
-// 返回 (transcript, comments, description, error)。error 为 nil 表示成功；否则为 dlErr 类型。
-// 字幕与评论任一成功即可，全部失败才报错。
+// cookieMode 描述一次 yt-dlp 调用的 cookie 策略：
+// browser 非空则加 --cookies-from-browser，cacheFile 非空则加 --cookies。
+// 两者同时非空时，yt-dlp 会从浏览器提取 cookies 并写入 cacheFile（一边抓取一边更新缓存）。
+type cookieMode struct {
+	browser   string
+	cacheFile string
+}
+
+func (c cookieMode) args() []string {
+	var a []string
+	if c.browser != "" {
+		a = append(a, "--cookies-from-browser", c.browser)
+	}
+	if c.cacheFile != "" {
+		a = append(a, "--cookies", c.cacheFile)
+	}
+	return a
+}
+
+// defaultCookiesPath 返回静态 cookie 缓存路径：{userprofile}/.lex/cookies.txt。
+// 读取失败返回 ""。作为变量以便测试替换。
+var defaultCookiesPath = func() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".lex", "cookies.txt")
+}
+
+// cookieFallbackChain 构建统一的降级链：
+//  1. 依次用每个浏览器双参数（--cookies-from-browser + --cookies）抓取并更新缓存
+//  2. 静态缓存兜底（仅 --cookies，浏览器锁定时旧缓存仍可用）
+//  3. 无 cookie 兜底
+//  4. 全部失败才由调用方报错
+func cookieFallbackChain() []cookieMode {
+	var chain []cookieMode
+	cache := defaultCookiesPath()
+	for _, b := range browserRetryOrder() {
+		if b == "" {
+			continue
+		}
+		chain = append(chain, cookieMode{browser: b, cacheFile: cache})
+	}
+	if cache != "" {
+		if _, err := os.Stat(cache); err == nil {
+			chain = append(chain, cookieMode{cacheFile: cache})
+		}
+	}
+	chain = append(chain, cookieMode{})
+	return chain
+}
+
 func ytdlpFetch(ctx context.Context, id string) (string, []ytdlpComment, string, error) {
 	path, err := exec.LookPath("yt-dlp")
 	if err != nil {
@@ -273,58 +340,111 @@ func ytdlpFetch(ctx context.Context, id string) (string, []ytdlpComment, string,
 	}
 	defer os.RemoveAll(tmp)
 
-	// cookies 绝对优先：先带 cookies 跑，失败再降级为无 cookies 重试。
-	cookieFile := cookiesPath()
-	retry := []string{cookieFile}
-	if cookieFile != "" {
-		retry = append(retry, "")
-	}
-	for _, cf := range retry {
-		transcript, comments, description, ok := runYtdlp(ctx, path, tmp, id, cf)
-		if ok {
+	var tried []string
+	// 第一层：单参数 --cookies-from-browser 直抓所有浏览器。
+	// 失败的浏览器秒报错（浏览器锁定/无该浏览器），延迟可忽略，可并行。
+	for _, b := range browserRetryOrder() {
+		if b == "" {
+			continue
+		}
+		tried = append(tried, b)
+		if transcript, comments, description, ok := runYtdlp(ctx, path, tmp, id, cookieMode{browser: b}); ok {
+			saveLastBrowser(b)
 			return transcript, comments, description, nil
 		}
 	}
 
-	// 全部失败：报告并提示调用方配置 yt-dlp 与 cookies
-	if cookieFile != "" {
-		return "", nil, "", &dlErr{msg: dlErrNoSubs + "\ncookies 已配置于 " + cookieFile + " 仍失败，请检查 cookies 是否过期或需更新（yt-dlp --cookies " + cookieFile + "）"}
+	// 第二层：直抓全失败，探测 dump 刷新缓存文件，再用缓存抓取。
+	cache := defaultCookiesPath()
+	for _, b := range browserRetryOrder() {
+		if b == "" {
+			continue
+		}
+		if !probeCookies(ctx, path, b, cache) {
+			continue
+		}
+		if transcript, comments, description, ok := runYtdlp(ctx, path, tmp, id, cookieMode{cacheFile: cache}); ok {
+			saveLastBrowser(b)
+			return transcript, comments, description, nil
+		}
 	}
-	return "", nil, "", &dlErr{msg: dlErrNoSubs + "\n未找到 cookies。请配置 yt-dlp cookies 后重试：\n  - 设置环境变量 LEX_YT_COOKIES 指向 cookies.txt，或\n  - 将 cookies.txt 置于 {userprofile}/.lex/cookies.txt\n  - 参考：https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp"}
+
+	// 第三层：静态缓存兜底（浏览器探测全部失败，如浏览器锁定）。
+	if cache != "" {
+		if _, err := os.Stat(cache); err == nil {
+			if transcript, comments, description, ok := runYtdlp(ctx, path, tmp, id, cookieMode{cacheFile: cache}); ok {
+				return transcript, comments, description, nil
+			}
+		}
+	}
+
+	// 第四层：无 cookie 兜底。
+	if transcript, comments, description, ok := runYtdlp(ctx, path, tmp, id, cookieMode{}); ok {
+		return transcript, comments, description, nil
+	}
+
+	return "", nil, "", &dlErr{msg: dlErrNoSubs + "\n已依次尝试浏览器 cookies " + strings.Join(tried, "/") + "、静态缓存 cookies 及无 cookies，均失败（无字幕、需登录或触发风控）。\n可设置环境变量 LEX_YT_BROWSER 指定浏览器，如 LEX_YT_BROWSER=edge。"}
 }
 
-// runYtdlp 执行 yt-dlp 抓取：先跑字幕命令，再跑评论+描述命令（dump-single-json）。
-// 两条命令独立，避免 --dump-single-json 吞掉字幕文件。
-// cookieFile 为空则不加 --cookies。ok=false 表示全部失败。
-func runYtdlp(ctx context.Context, path, tmp, id, cookieFile string) (string, []ytdlpComment, string, bool) {
-	transcript, subOK := runSubs(ctx, path, tmp, id, cookieFile)
-	comments, description, commentOK := runComments(ctx, path, id, cookieFile)
-	if !subOK && !commentOK {
-		return "", nil, "", false
+// probeCookies 探测 yt-dlp 能否从浏览器导出 cookies 并写入缓存文件。
+// 用一个不存在的占位符视频跳过一切下载，只触发 cookie 导出逻辑。
+// 关键：yt-dlp 导出 cookie 成功时会向 stderr 打印 "Extracted N cookies from <browser>"，
+// 即使后续因占位符视频报 "Video unavailable"（退出码非 0），导出仍已成功。
+// 因此不能只看退出码，必须解析 stderr。
+func probeCookies(ctx context.Context, path, browser, cacheFile string) bool {
+	if cacheFile == "" {
+		return false
 	}
-	return transcript, comments, description, true
+	args := []string{
+		"--cookies-from-browser", browser,
+		"--cookies", cacheFile,
+		"--skip-download",
+		"--no-progress", "--no-warnings",
+		"https://www.youtube.com/watch?v=__lex_cookie_probe__",
+	}
+	cmd := exec.CommandContext(ctx, path, args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	cmd.Stdout = io.Discard
+	_ = cmd.Run()
+	s := stderr.String()
+	// 解析 "Extracted N cookies from <browser>" 确认导出成功。
+	probeRe := regexp.MustCompile(`Extracted\s+\d+\s+cookies?\s+from\s+` + regexp.QuoteMeta(browser))
+	return probeRe.MatchString(s)
 }
 
-// runSubs 执行 yt-dlp 下载自动字幕（srt）。
-func runSubs(ctx context.Context, path, tmp, id, cookieFile string) (string, bool) {
+// runYtdlp 用一次 yt-dlp 调用同时抓取字幕、评论与描述。
+// 用 --write-info-json（非 simulate）替代 --dump-single-json（simulate），
+// 使评论/描述写入 .info.json 文件的同时字幕也能落盘，避免功能冲突。
+func runYtdlp(ctx context.Context, path, tmp, id string, m cookieMode) (string, []ytdlpComment, string, bool) {
 	out := filepath.Join(tmp, "%(id)s.%(ext)s")
 	args := []string{
 		"--skip-download",
+		"--write-info-json",
+		"--write-comments",
 		"--write-auto-sub",
 		"--sub-lang", "en",
 		"--convert-subs", "srt",
 		"--output", out,
 		"--no-progress", "--no-warnings",
 	}
-	if cookieFile != "" {
-		args = append(args, "--cookies", cookieFile)
-	}
+	args = append(args, m.args()...)
 	args = append(args, "https://www.youtube.com/watch?v="+id)
 	cmd := exec.CommandContext(ctx, path, args...)
 	if err := cmd.Run(); err != nil {
-		return "", false
+		return "", nil, "", false
 	}
 
+	transcript, subOK := readTranscript(tmp)
+	comments, description, commentOK := readComments(tmp, id)
+	if !subOK && !commentOK {
+		return "", nil, "", false
+	}
+	return transcript, comments, description, true
+}
+
+// readTranscript 从 tmp 目录读取转换后的 srt 字幕。
+func readTranscript(tmp string) (string, bool) {
 	files, _ := filepath.Glob(filepath.Join(tmp, "*.srt"))
 	if len(files) == 0 {
 		return "", false
@@ -340,26 +460,14 @@ func runSubs(ctx context.Context, path, tmp, id, cookieFile string) (string, boo
 	return transcript, true
 }
 
-// runComments 执行 yt-dlp --dump-single-json 拿评论与描述。
-func runComments(ctx context.Context, path, id, cookieFile string) ([]ytdlpComment, string, bool) {
-	args := []string{
-		"--skip-download",
-		"--write-comments",
-		"--dump-single-json",
-		"--no-progress", "--no-warnings",
-	}
-	if cookieFile != "" {
-		args = append(args, "--cookies", cookieFile)
-	}
-	args = append(args, "https://www.youtube.com/watch?v="+id)
-	cmd := exec.CommandContext(ctx, path, args...)
-	stdout, err := cmd.Output()
+// readComments 从 tmp 目录读取 %(id)s.info.json 中的评论与描述。
+func readComments(tmp, id string) ([]ytdlpComment, string, bool) {
+	data, err := os.ReadFile(filepath.Join(tmp, id+".info.json"))
 	if err != nil {
 		return nil, "", false
 	}
-
 	var info ytdlpInfo
-	if err := json.Unmarshal(stdout, &info); err != nil {
+	if err := json.Unmarshal(data, &info); err != nil {
 		return nil, "", false
 	}
 	if len(info.Comments) == 0 {
@@ -368,8 +476,6 @@ func runComments(ctx context.Context, path, id, cookieFile string) ([]ytdlpComme
 	return info.Comments, info.Description, true
 }
 
-// parseSRT 清洗 SRT 字幕：去 HTML 标签、时间戳、序号、WEBVTT 头、相邻重复行。
-// 每行字幕用换行分隔，保留成独立句子，供 rerank 按语义挑选后按时间戳顺序重排。
 func parseSRT(content string) string {
 	tagRe := regexp.MustCompile(`<[^>]+>`)
 	var lines []string
@@ -387,7 +493,6 @@ func parseSRT(content string) string {
 	return strings.Join(lines, "\n")
 }
 
-// isNumeric 判断字符串是否纯数字（SRT 序号行）。
 func isNumeric(s string) bool {
 	for _, r := range s {
 		if r < '0' || r > '9' {
@@ -397,7 +502,6 @@ func isNumeric(s string) bool {
 	return s != ""
 }
 
-// Truncate 按 limit 截断，limit<=0 表示不截断。
 func Truncate(content string, limit int) string {
 	if limit <= 0 || len(content) <= limit {
 		return content
@@ -406,7 +510,6 @@ func Truncate(content string, limit int) string {
 		content[:limit], limit, len(content))
 }
 
-// formatDuration 把秒数格式化为 mm:ss 或 h:mm:ss（供测试与展示）。
 func formatDuration(sec float64) string {
 	d := time.Duration(sec) * time.Second
 	h := int(d.Hours())

@@ -1,5 +1,3 @@
-// Package rerank 提供独立的 BM25 句子重排序引擎。
-// 从 pkg 下沉，供 pkg 与 pkg/hook 共同使用，避免循环依赖。
 package rerank
 
 import (
@@ -142,12 +140,10 @@ type scoredSentence struct {
 	OriginalIndex int
 }
 
-// ExtractHighlights 按 token 预算对句子做 BM25 rerank（原 pkg.ExtractHighlights）。
 func ExtractHighlights(content, query string, maxTokens int) string {
 	return extractByBudget(content, query, maxTokens, true)
 }
 
-// RerankByChars 按字符预算对句子做 BM25 rerank，query 为空时退化为顺序截断。
 func RerankByChars(content, query string, maxChars int) string {
 	return extractByBudget(content, query, maxChars, false)
 }
@@ -170,7 +166,7 @@ func extractByBudget(content, query string, budget int, byToken bool) string {
 			repaired = append(repaired, s)
 		}
 	}
-	sentences = repaired
+	sentences = dedupeSentences(repaired)
 
 	if len(sentences) <= 2 {
 		return truncateByBudget(sentences, budget, byToken)
@@ -321,7 +317,101 @@ func extractByBudget(content, query string, budget int, byToken bool) string {
 	return b.String()
 }
 
-// measure 按预算类型测量句子开销：token 估算或字符数。
+// dedupeSentences 去除重复句子：完全相等，或移除标点后相似度 >99%（Levenshtein）。
+// 保留首次出现的位置，保持原文顺序。
+func dedupeSentences(sentences []string) []string {
+	if len(sentences) <= 1 {
+		return sentences
+	}
+	norm := make([]string, len(sentences))
+	for i, s := range sentences {
+		norm[i] = normalizeSentenceDedupe(s)
+	}
+	keep := make([]bool, len(sentences))
+	for i := range sentences {
+		keep[i] = true
+	}
+	for i := 1; i < len(sentences); i++ {
+		if !keep[i] {
+			continue
+		}
+		for j := 0; j < i; j++ {
+			if !keep[j] {
+				continue
+			}
+			if norm[i] == norm[j] || similar(norm[i], norm[j]) {
+				keep[i] = false
+				break
+			}
+		}
+	}
+	out := make([]string, 0, len(sentences))
+	for i, s := range sentences {
+		if keep[i] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// normalizeSentenceDedupe 移除标点与空白并转小写，用于重复判定。
+func normalizeSentenceDedupe(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
+}
+
+// similar 判断两个规范化字符串相似度是否 >99%（Levenshtein 距离）。
+func similar(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	la, lb := len(a), len(b)
+	// 长度差异超过 2% 直接判不相似，避免无谓计算
+	diff := la - lb
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff*100 > max(la, lb)*2 {
+		return false
+	}
+	dist := levenshtein(a, b)
+	maxLen := max(la, lb)
+	return float64(maxLen-dist)/float64(maxLen) > 0.99
+}
+
+// levenshtein 计算两个字符串的编辑距离。
+func levenshtein(a, b string) int {
+	la, lb := len(a), len(b)
+	if la == 0 {
+		return lb
+	}
+	if lb == 0 {
+		return la
+	}
+	prev := make([]int, lb+1)
+	cur := make([]int, lb+1)
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		cur[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev, cur = cur, prev
+	}
+	return prev[lb]
+}
+
 func measure(s string, byToken bool) int {
 	if byToken {
 		return estimateTokens(s)
@@ -329,7 +419,6 @@ func measure(s string, byToken bool) int {
 	return len([]rune(s))
 }
 
-// truncateByBudget 顺序取句子直到预算用尽。
 func truncateByBudget(sentences []string, budget int, byToken bool) string {
 	var b strings.Builder
 	used := 0
@@ -550,7 +639,6 @@ func flushBuf(buf *strings.Builder, sentences *[]string) {
 	}
 }
 
-// Tokenize 分词（供外部与内部共用）。
 func Tokenize(text string) []string {
 	text = strings.ToLower(text)
 	raw := strings.Fields(text)

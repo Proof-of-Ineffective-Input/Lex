@@ -16,21 +16,16 @@ import (
 	"mcp-search-duckduckgo/pkg"
 )
 
-// ---- 变量结构前置：常量、参数结构、结果结构、声明式工具注册表 ----
-
 const (
 	defaultFetchLimit    = 2000
 	highlightsFullBudget = 3000
 )
 
-// SearchArgs 是 web_search_lex 的输入参数。
-// schema 由 SDK 从 jsonschema tag 自动推断，无需手写 JSON。
 type SearchArgs struct {
 	Query      string `json:"query" jsonschema:"Search keywords (use English keywords for better reliability)"`
 	MaxResults int    `json:"max_results,omitempty" jsonschema:"Number of results to return. Clamped to [5, 50]. Recommended: 10-20 for balanced speed and coverage (default 10)"`
 }
 
-// FetchArgs 是 web_fetch_lex 的输入参数。
 type FetchArgs struct {
 	URLs map[string]int `json:"urls" jsonschema:"Map of target URLs to character limits per page. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 2000 for quick extraction (~500 tokens), 8000 for standard read, 16000 for comprehensive content."`
 }
@@ -43,15 +38,12 @@ type searchResult struct {
 	Score      float64
 }
 
-// toolSpec 声明式工具定义：名称、描述、注册闭包。
-// 闭包捕获各自类型的 handler，name/desc 由参数复用，避免重复。
 type toolSpec struct {
 	name string
 	desc string
 	reg  func(s *mcp.Server, name, desc string)
 }
 
-// tools 声明式工具注册表 —— 新增工具只需在此追加一项。
 var tools = []toolSpec{
 	{
 		name: "web_search_lex",
@@ -70,7 +62,7 @@ var tools = []toolSpec{
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.5.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.5.2"}, nil)
 
 	for _, t := range tools {
 		t.reg(s, t.name, t.desc)
@@ -81,7 +73,6 @@ func main() {
 	}
 }
 
-// searchHandler 由 SDK 自动完成参数 unmarshal 与校验。
 func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArgs) (*mcp.CallToolResult, any, error) {
 	maxResults := args.MaxResults
 	if maxResults <= 0 {
@@ -141,7 +132,6 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArg
 		results = results[:maxResults]
 	}
 
-	// 阶段 1：并发抓取全文
 	fetchClient := &http.Client{Timeout: 15 * time.Second}
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
@@ -163,20 +153,16 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArg
 	}
 	wg.Wait()
 
-	// 阶段 2：页面级 BM25 评分
 	for i := range results {
 		if contents[i] != "" {
 			results[i].Score = pkg.ScorePage(contents[i], args.Query)
 		}
 	}
 
-	// 按评分降序排序
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
 	})
 
-	// 阶段 3：分级分配 highlights budget
-	// 前一半（向上取整）拿 full budget，后一半拿 half budget
 	n := len(results)
 	topN := (n + 1) / 2 // 前一半（含中间）
 	for i := range results {
@@ -209,7 +195,6 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArg
 	}, nil, nil
 }
 
-// fetchHandler 由 SDK 自动完成参数 unmarshal 与校验。
 func fetchHandler(ctx context.Context, req *mcp.CallToolRequest, args FetchArgs) (*mcp.CallToolResult, any, error) {
 	if len(args.URLs) == 0 {
 		return &mcp.CallToolResult{

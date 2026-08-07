@@ -101,7 +101,6 @@ func decodeToUTF8(data []byte, contentType string) []byte {
 	if name == "utf-8" || name == "" {
 		return data
 	}
-	// certain=false means the detector is guessing; skip non-certain non-utf8 to avoid corrupting valid utf-8
 	if !certain {
 		return data
 	}
@@ -146,7 +145,6 @@ func FetchSingle(ctx context.Context, client *http.Client, target string, limit 
 		return cached, nil
 	}
 
-	// YouTube 旁路：命中则走 ytb hook，否则走原 HTML→Markdown 流程。
 	if hook.ExtractVideoID(target) != "" {
 		result, err := hook.Fetch(ctx, client, target, limit)
 		if err != nil {
