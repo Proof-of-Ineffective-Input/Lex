@@ -1,4 +1,4 @@
-module mcp-search-duckduckgo
+module lex
 
 go 1.25.5
 

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mcp-search-duckduckgo/pkg/rerank"
+	"lex/pkg/rerank"
 	"net/http"
 	"net/url"
 	"os"
@@ -157,7 +157,7 @@ func fetchOEmbed(ctx context.Context, client *http.Client, id string) (*oembed, 
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+	req.Header.Set("User-Agent", UA)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -178,7 +178,7 @@ func fetchEnhanced(ctx context.Context, client *http.Client, target string) (*vi
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+	req.Header.Set("User-Agent", UA)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -319,29 +319,6 @@ var defaultCookiesPath = func() string {
 		return ""
 	}
 	return filepath.Join(home, ".lex", "cookies.txt")
-}
-
-// cookieFallbackChain 构建统一的降级链：
-//  1. 依次用每个浏览器双参数（--cookies-from-browser + --cookies）抓取并更新缓存
-//  2. 静态缓存兜底（仅 --cookies，浏览器锁定时旧缓存仍可用）
-//  3. 无 cookie 兜底
-//  4. 全部失败才由调用方报错
-func cookieFallbackChain() []cookieMode {
-	var chain []cookieMode
-	cache := defaultCookiesPath()
-	for _, b := range browserRetryOrder() {
-		if b == "" {
-			continue
-		}
-		chain = append(chain, cookieMode{browser: b, cacheFile: cache})
-	}
-	if cache != "" {
-		if _, err := os.Stat(cache); err == nil {
-			chain = append(chain, cookieMode{cacheFile: cache})
-		}
-	}
-	chain = append(chain, cookieMode{})
-	return chain
 }
 
 func ytdlpFetch(ctx context.Context, id string) (string, []ytdlpComment, string, error) {

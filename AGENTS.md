@@ -9,12 +9,12 @@ Unlike other DDG MCP servers that return only snippets and force a second `fetch
 ## Build
 
 ```powershell
-go build -o lex.exe .
+go build -ldflags="-s -w" -o lex.exe .
 ```
 
 ## Non-obvious facts
 
-- Module name: `mcp-search-duckduckgo` — import path uses this, not `lex`
+- Module name: `lex` — import path uses this
 - Go version: `1.25.5` — very recent, ensure your environment matches
 - No linter config — no `.golangci.yml`, style follows Go conventions
 - Tests only live in `pkg/hook` and `pkg/rerank` subpackages (`_test.go`); CI does not run tests

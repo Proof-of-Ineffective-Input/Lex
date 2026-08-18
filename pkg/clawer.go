@@ -12,7 +12,7 @@ import (
 
 	"github.com/hashicorp/golang-lru/v2/expirable"
 
-	"mcp-search-duckduckgo/pkg/hook"
+	"lex/pkg/hook"
 )
 
 var (
@@ -118,11 +118,43 @@ func NormalizeLimit(limit int) int {
 }
 
 func TruncateContent(content string, limit int) string {
-	if limit <= 0 || len(content) <= limit {
-		return content
+	return hook.Truncate(content, limit)
+}
+
+// FetchResult 一次抓取的输出：内容或错误。
+type FetchResult struct {
+	Content string
+	Err     error
+}
+
+// FetchAll 并发抓取多个 URL，返回与输入顺序一致的结果切片。
+// 统一 semaphore(8) + per-host 限流；每个 URL 独立槽位，无共享可变状态。
+// limit 为 0 时表示对全部 URL 使用同一 limit；否则按 targets 逐一对齐 limits。
+func FetchAll(ctx context.Context, client *http.Client, targets []string, limits []int) []FetchResult {
+	results := make([]FetchResult, len(targets))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for i, target := range targets {
+		limit := 0
+		if len(limits) == 1 {
+			limit = limits[0]
+		} else if i < len(limits) {
+			limit = limits[i]
+		}
+		wg.Add(1)
+		go func(idx int, t string, l int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			release := AcquireHost(HostOf(t))
+			defer release()
+			content, err := FetchSingle(ctx, client, t, l)
+			results[idx] = FetchResult{Content: content, Err: err}
+		}(i, target, limit)
 	}
-	truncated := content[:limit]
-	return fmt.Sprintf("%s\n\n---\n*Content truncated to %d characters (original: %d characters)*", truncated, limit, len(content))
+	wg.Wait()
+	return results
 }
 
 // FetchSingle 抓取 URL 并返回文本。

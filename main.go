@@ -13,8 +13,8 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"mcp-search-duckduckgo/pkg"
-	"mcp-search-duckduckgo/pkg/hook"
+	"lex/pkg"
+	"lex/pkg/hook"
 )
 
 const (
@@ -155,33 +155,13 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArg
 	}
 
 	// per-host 限流并发抓取
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
-
-	contents := make([]string, len(results))
-	for i := range results {
-		wg.Add(1)
-		go func(idx int, r *searchResult) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			release := pkg.AcquireHost(pkg.HostOf(r.URL))
-			defer release()
-			content, err := pkg.FetchSingle(ctx, client, r.URL, defaultFetchLimit)
-			if err != nil {
-				return
-			}
-			contents[idx] = content
-		}(i, &results[i])
-	}
-	wg.Wait()
+	fetched := pkg.FetchAll(ctx, client, urlsOf(results), []int{defaultFetchLimit})
 
 	// 评分：共用一次 Tokenize 分析结果
 	analyses := make([]*pkg.PageAnalysis, len(results))
 	for i := range results {
-		if contents[i] != "" {
-			analyses[i] = pkg.AnalyzePage(contents[i], args.Query)
+		if fetched[i].Err == nil {
+			analyses[i] = pkg.AnalyzePage(fetched[i].Content, args.Query)
 			results[i].Score = analyses[i].Score
 		}
 	}
@@ -196,7 +176,7 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArg
 	var hlWg sync.WaitGroup
 	hlSem := make(chan struct{}, 8)
 	for i := range results {
-		if contents[i] == "" {
+		if fetched[i].Err != nil {
 			continue
 		}
 		hlWg.Add(1)
@@ -261,6 +241,15 @@ func formatSearchResults(results []searchResult) *mcp.CallToolResult {
 	}
 }
 
+// urlsOf 提取 searchResult 切片中的 URL 列表（保持顺序）。
+func urlsOf(results []searchResult) []string {
+	urls := make([]string, len(results))
+	for i, r := range results {
+		urls[i] = r.URL
+	}
+	return urls
+}
+
 func fetchHandler(ctx context.Context, req *mcp.CallToolRequest, args FetchArgs) (*mcp.CallToolResult, any, error) {
 	if len(args.URLs) == 0 {
 		return &mcp.CallToolResult{
@@ -270,46 +259,28 @@ func fetchHandler(ctx context.Context, req *mcp.CallToolRequest, args FetchArgs)
 	}
 
 	client := pkg.SharedClient
-	results := make(map[string]string, len(args.URLs))
-	errs := make(map[string]error, len(args.URLs))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
 	urls := make([]string, 0, len(args.URLs))
 	for u := range args.URLs {
 		urls = append(urls, u)
 	}
 	sort.Strings(urls)
-	for _, urlStr := range urls {
-		limit := args.URLs[urlStr]
-		wg.Add(1)
-		go func(target string, limit int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			release := pkg.AcquireHost(pkg.HostOf(target))
-			defer release()
-			content, err := pkg.FetchSingle(ctx, client, target, limit)
-			if err != nil {
-				errs[target] = err
-				return
-			}
-			results[target] = content
-		}(urlStr, limit)
+
+	limits := make([]int, len(urls))
+	for i, u := range urls {
+		limits[i] = args.URLs[u]
 	}
-	wg.Wait()
+	fetched := pkg.FetchAll(ctx, client, urls, limits)
 
 	var sb strings.Builder
-	first := true
-	for _, urlStr := range urls {
-		if !first {
+	for i, urlStr := range urls {
+		if i > 0 {
 			sb.WriteString("\n\n---\n\n")
 		}
-		first = false
-		if err, ok := errs[urlStr]; ok {
-			sb.WriteString(fmt.Sprintf("Fetch failed: %v\n\n(from %s)", err, urlStr))
+		if fetched[i].Err != nil {
+			sb.WriteString(fmt.Sprintf("Fetch failed: %v\n\n(from %s)", fetched[i].Err, urlStr))
 			continue
 		}
-		sb.WriteString(results[urlStr])
+		sb.WriteString(fetched[i].Content)
 	}
 
 	return &mcp.CallToolResult{

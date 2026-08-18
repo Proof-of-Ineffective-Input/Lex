@@ -194,65 +194,6 @@ func TestSaveLoadLastBrowser(t *testing.T) {
 	}
 }
 
-func TestCookieFallbackChainOrder(t *testing.T) {
-	t.Setenv("LEX_YT_BROWSER", "")
-	dir := t.TempDir()
-	origState := statePath
-	statePath = func() string { return filepath.Join(dir, "ytb-browser.txt") }
-	defer func() { statePath = origState }()
-	origCache := defaultCookiesPath
-	defaultCookiesPath = func() string { return filepath.Join(dir, "cookies.txt") }
-	defer func() { defaultCookiesPath = origCache }()
-
-	if err := os.WriteFile(filepath.Join(dir, "cookies.txt"), []byte("# HTTP Cookie File\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	chain := cookieFallbackChain()
-	// 每个浏览器双参数在前，静态缓存兜底，最后无 cookie
-	wantLen := len(supportedBrowsers) + 2
-	if len(chain) != wantLen {
-		t.Fatalf("cookieFallbackChain len = %d, want %d", len(chain), wantLen)
-	}
-	for i, m := range chain {
-		if i < len(supportedBrowsers) {
-			if m.browser == "" || m.cacheFile == "" {
-				t.Errorf("browser step %d should have both browser and cache, got %+v", i, m)
-			}
-		} else if i == len(supportedBrowsers) {
-			if m.browser != "" || m.cacheFile == "" {
-				t.Errorf("cache fallback step should have only cacheFile, got %+v", m)
-			}
-		} else {
-			if m.browser != "" || m.cacheFile != "" {
-				t.Errorf("final step should have no cookies, got %+v", m)
-			}
-		}
-	}
-}
-
-func TestCookieFallbackChainNoCache(t *testing.T) {
-	t.Setenv("LEX_YT_BROWSER", "")
-	dir := t.TempDir()
-	origState := statePath
-	statePath = func() string { return filepath.Join(dir, "ytb-browser.txt") }
-	defer func() { statePath = origState }()
-	origCache := defaultCookiesPath
-	defaultCookiesPath = func() string { return filepath.Join(dir, "cookies.txt") }
-	defer func() { defaultCookiesPath = origCache }()
-
-	chain := cookieFallbackChain()
-	// 缓存不存在时跳过缓存兜底，只剩浏览器步骤 + 无 cookie
-	wantLen := len(supportedBrowsers) + 1
-	if len(chain) != wantLen {
-		t.Fatalf("cookieFallbackChain without cache len = %d, want %d", len(chain), wantLen)
-	}
-	last := chain[len(chain)-1]
-	if last.browser != "" || last.cacheFile != "" {
-		t.Errorf("final step should have no cookies, got %+v", last)
-	}
-}
-
 func TestCookieModeArgs(t *testing.T) {
 	if got := (cookieMode{}).args(); len(got) != 0 {
 		t.Errorf("empty mode args = %v, want none", got)
