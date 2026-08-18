@@ -120,7 +120,7 @@ func TestFetchDegradesWithoutYtDlp(t *testing.T) {
 	}
 	t.Setenv("PATH", "")
 	client := &http.Client{}
-	out, err := Fetch(context.Background(), client, "https://www.youtube.com/watch?v=MWx0KFdWg7A", 0)
+	out, err := (YTHook{}).Fetch(context.Background(), client, "https://www.youtube.com/watch?v=MWx0KFdWg7A", 0)
 	if err != nil {
 		t.Fatalf("Fetch should not error even without yt-dlp: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestFetchDegradesWithoutYtDlp(t *testing.T) {
 
 func TestFetchInvalidURL(t *testing.T) {
 	client := &http.Client{}
-	_, err := Fetch(context.Background(), client, "https://example.com", 0)
+	_, err := (YTHook{}).Fetch(context.Background(), client, "https://example.com", 0)
 	if err == nil {
 		t.Fatal("expected error for non-YouTube URL")
 	}

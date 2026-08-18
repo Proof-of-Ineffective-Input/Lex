@@ -318,6 +318,7 @@ func extractByBudget(content, query string, budget int, byToken bool) string {
 }
 
 // dedupeSentences 去除重复句子：完全相等，或移除标点后相似度 >99%（Levenshtein）。
+// 先按规范化哈希聚类，组内再做 Levenshtein，整体降为近线性。
 // 保留首次出现的位置，保持原文顺序。
 func dedupeSentences(sentences []string) []string {
 	if len(sentences) <= 1 {
@@ -331,16 +332,30 @@ func dedupeSentences(sentences []string) []string {
 	for i := range sentences {
 		keep[i] = true
 	}
+	// 哈希聚类：规范化字符串按长度分桶，长度相近才可能相似
+	buckets := make(map[int][]int, 8)
+	for i := range sentences {
+		buckets[len(norm[i])] = append(buckets[len(norm[i])], i)
+	}
 	for i := 1; i < len(sentences); i++ {
 		if !keep[i] {
 			continue
 		}
-		for j := 0; j < i; j++ {
-			if !keep[j] {
-				continue
+		la := len(norm[i])
+		// 仅检查长度差异 ≤2% 的桶内成员
+		lo := la - la/50
+		hi := la + la/50
+		for l := lo; l <= hi; l++ {
+			for _, j := range buckets[l] {
+				if j >= i || !keep[j] {
+					continue
+				}
+				if norm[i] == norm[j] || similar(norm[i], norm[j]) {
+					keep[i] = false
+					break
+				}
 			}
-			if norm[i] == norm[j] || similar(norm[i], norm[j]) {
-				keep[i] = false
+			if !keep[i] {
 				break
 			}
 		}

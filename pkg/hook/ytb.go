@@ -54,7 +54,19 @@ type ytdlpComment struct {
 
 var ytInitialPlayerResponseRe = regexp.MustCompile(`ytInitialPlayerResponse\s*=\s*(\{.*?\});`)
 
-func Fetch(ctx context.Context, client *http.Client, target string, limit int) (string, error) {
+// YTHook 处理 YouTube 视频 URL（oEmbed + yt-dlp 字幕/评论）。
+type YTHook struct{}
+
+// Name 实现 Hook。
+func (YTHook) Name() string { return "youtube" }
+
+// Match 实现 Hook：URL 含 YouTube 视频 ID。
+func (YTHook) Match(target string) bool {
+	return videoIDRe.MatchString(target)
+}
+
+// Fetch 实现 Hook。
+func (YTHook) Fetch(ctx context.Context, client *http.Client, target string, limit int) (string, error) {
 	id := ExtractVideoID(target)
 	if id == "" {
 		return "", fmt.Errorf("not a valid YouTube URL: %s", target)
@@ -132,6 +144,10 @@ func ExtractVideoID(target string) string {
 		return ""
 	}
 	return m[1]
+}
+
+func init() {
+	Register(YTHook{})
 }
 
 func fetchOEmbed(ctx context.Context, client *http.Client, id string) (*oembed, error) {
