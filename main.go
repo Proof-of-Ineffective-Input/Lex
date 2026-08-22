@@ -29,7 +29,8 @@ type SearchArgs struct {
 }
 
 type FetchArgs struct {
-	URLs map[string]int `json:"urls" jsonschema:"Map of target URLs to character limits per page. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Recommended: 2000 for quick extraction (~500 tokens), 8000 for standard read, 16000 for comprehensive content."`
+	URLs  []string `json:"urls" jsonschema:"List of target URLs to fetch."`
+	Limit int      `json:"limit,omitempty" jsonschema:"Optional character limit applied to all URLs. Clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit. Default: 2000."`
 }
 
 type searchResult struct {
@@ -49,14 +50,14 @@ type toolSpec struct {
 var tools = []toolSpec{
 	{
 		name: "web_search_lex",
-		desc: "Search DuckDuckGo Lite, fetch each result page, extract query-relevant highlights via BM25 re-ranking, and return structured results with markdown rendering. Also callable as 'search' or 'web_search'. Top-ranked pages get full highlights; lower-ranked pages get condensed highlights.",
+		desc: "Search the internet using DuckDuckGo. Supports standard search operators (e.g., site:).",
 		reg: func(s *mcp.Server, name, desc string) {
 			mcp.AddTool[SearchArgs, any](s, &mcp.Tool{Name: name, Description: desc}, searchHandler)
 		},
 	},
 	{
 		name: "web_fetch_lex",
-		desc: "Fetch URL content via direct HTML-to-Markdown conversion with optional character limits per URL. Each value is clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit (returns full page). Also callable as 'fetch' or 'web_fetch'.",
+		desc: "Fetch URL content as Markdown, supporting auto-parsing for Office documents and integrated YouTube video transcripts via yt-dlp. Character limit clamped to [2000, 64000].",
 		reg: func(s *mcp.Server, name, desc string) {
 			mcp.AddTool[FetchArgs, any](s, &mcp.Tool{Name: name, Description: desc}, fetchHandler)
 		},
@@ -77,7 +78,7 @@ type cachedSearch struct {
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.6.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.6.2"}, nil)
 
 	for _, t := range tools {
 		t.reg(s, t.name, t.desc)
@@ -259,16 +260,17 @@ func fetchHandler(ctx context.Context, req *mcp.CallToolRequest, args FetchArgs)
 	}
 
 	client := pkg.SharedClient
-	urls := make([]string, 0, len(args.URLs))
-	for u := range args.URLs {
-		urls = append(urls, u)
+	urls := args.URLs
+	limit := args.Limit
+	if limit == 0 {
+		limit = 2000
 	}
-	sort.Strings(urls)
 
 	limits := make([]int, len(urls))
-	for i, u := range urls {
-		limits[i] = args.URLs[u]
+	for i := range limits {
+		limits[i] = limit
 	}
+
 	fetched := pkg.FetchAll(ctx, client, urls, limits)
 
 	var sb strings.Builder
