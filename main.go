@@ -24,8 +24,9 @@ const (
 )
 
 type SearchArgs struct {
-	Query      string `json:"query" jsonschema:"Search keywords (use English keywords for better reliability)"`
-	MaxResults int    `json:"max_results,omitempty" jsonschema:"Number of results to return. Clamped to [5, 50]. Recommended: 10-20 for balanced speed and coverage (default 10)"`
+	Query       string `json:"query" jsonschema:"Search keywords for duckduckgo"`
+	Description string `json:"description,omitempty" jsonschema:"Optional description or question for deep content reranking and highlight extraction. If omitted, uses query instead."`
+	MaxResults  int    `json:"max_results,omitempty" jsonschema:"Number of results to return. Clamped to [5, 50]. default 10"`
 }
 
 type FetchArgs struct {
@@ -78,7 +79,7 @@ type cachedSearch struct {
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.6.2"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.6.3"}, nil)
 
 	for _, t := range tools {
 		t.reg(s, t.name, t.desc)
@@ -160,9 +161,13 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArg
 
 	// 评分：共用一次 Tokenize 分析结果
 	analyses := make([]*pkg.PageAnalysis, len(results))
+	rerankQuery := args.Query
+	if args.Description != "" {
+		rerankQuery = args.Description
+	}
 	for i := range results {
 		if fetched[i].Err == nil {
-			analyses[i] = pkg.AnalyzePage(fetched[i].Content, args.Query)
+			analyses[i] = pkg.AnalyzePage(fetched[i].Content, rerankQuery)
 			results[i].Score = analyses[i].Score
 		}
 	}
@@ -189,7 +194,7 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArg
 			if idx >= topN {
 				budget = highlightsFullBudget / 2
 			}
-			hl := pkg.ExtractHighlightsFromAnalysis(analyses[idx], args.Query, budget)
+			hl := pkg.ExtractHighlightsFromAnalysis(analyses[idx], rerankQuery, budget)
 			if hl != "" {
 				results[idx].Highlights = hl
 			}
