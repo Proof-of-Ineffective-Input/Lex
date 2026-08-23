@@ -99,17 +99,21 @@ func TestTruncate(t *testing.T) {
 
 func TestSplitBudget(t *testing.T) {
 	cases := []struct {
-		limit, wantT, wantD int
+		limit, tLen, dLen int
+		wantT, wantD      int
 	}{
-		{0, 0, 0},
-		{3000, 2000, 1000},
-		{300, 200, 100},
-		{2, 1, 0},
+		{0, 2000, 1000, 0, 0},
+		{3000, 2000, 1000, 2010, 990}, // 66.666% -> 67% of 3000 = 2010
+		{3000, 1000, 2000, 990, 2010}, // 33.333% -> 33% of 3000 = 990
+		{3000, 1000, 1000, 1500, 1500}, // 50%
+		{3000, 0, 1000, 0, 3000},       // partial fetch: no transcript
+		{3000, 2000, 0, 3000, 0},       // partial fetch: no discussion
+		{3000, 0, 0, 0, 0},
 	}
 	for _, c := range cases {
-		gotT, gotD := splitBudget(c.limit)
+		gotT, gotD := splitBudget(c.limit, c.tLen, c.dLen)
 		if gotT != c.wantT || gotD != c.wantD {
-			t.Errorf("splitBudget(%d) = (%d,%d), want (%d,%d)", c.limit, gotT, gotD, c.wantT, c.wantD)
+			t.Errorf("splitBudget(%d, %d, %d) = (%d,%d), want (%d,%d)", c.limit, c.tLen, c.dLen, gotT, gotD, c.wantT, c.wantD)
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"lex/pkg/rerank"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var videoIDRe = regexp.MustCompile(`(?:youtube\.com/(?:watch\?v=|shorts/|embed/|live/|v/)|youtu\.be/)([A-Za-z0-9_-]{11})`)
@@ -105,7 +107,21 @@ func (YTHook) Fetch(ctx context.Context, client *http.Client, target string, lim
 		return sb.String(), nil
 	}
 
-	transcriptBudget, discussionBudget := splitBudget(limit)
+	discText := ""
+	if len(comments) > 0 {
+		discText = formatComments(comments)
+	}
+
+	tLen := utf8.RuneCountInString(transcript)
+	dLen := utf8.RuneCountInString(discText)
+
+	transcriptBudget, discussionBudget := splitBudget(limit, tLen, dLen)
+
+	if transcript == "" && len(comments) > 0 {
+		sb.WriteString("\n\nNote: No transcript available for this video; full budget allocated to discussion.")
+	} else if transcript != "" && len(comments) == 0 {
+		sb.WriteString("\n\nNote: No comments available for this video; full budget allocated to transcript.")
+	}
 
 	if transcript != "" {
 		sb.WriteString("\n\nTranscript:\n")
@@ -114,17 +130,30 @@ func (YTHook) Fetch(ctx context.Context, client *http.Client, target string, lim
 	}
 	if len(comments) > 0 {
 		sb.WriteString("\n\nDiscussion:\n")
-		sb.WriteString(Truncate(formatComments(comments), discussionBudget))
+		sb.WriteString(Truncate(discText, discussionBudget))
 	}
 
 	return sb.String(), nil
 }
 
-func splitBudget(limit int) (transcript, discussion int) {
+func splitBudget(limit, tLen, dLen int) (transcript, discussion int) {
 	if limit <= 0 {
 		return 0, 0
 	}
-	return limit * 2 / 3, limit / 3
+	if tLen <= 0 && dLen <= 0 {
+		return 0, 0
+	}
+	if tLen <= 0 {
+		return 0, limit
+	}
+	if dLen <= 0 {
+		return limit, 0
+	}
+
+	pct := math.Round(float64(tLen) / float64(tLen+dLen) * 100.0)
+	tBudget := int(math.Round(float64(limit) * pct / 100.0))
+	dBudget := limit - tBudget
+	return tBudget, dBudget
 }
 
 func formatComments(comments []ytdlpComment) string {
