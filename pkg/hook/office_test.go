@@ -66,8 +66,8 @@ func TestConvertOfficeNoTextLayerHint(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected no-text-layer error, got: %q", out)
 	}
-	if !strings.Contains(err.Error(), "无文本层") {
-		t.Fatalf("expected 无文本层 hint, got: %v", err)
+	if !strings.Contains(err.Error(), "no text layer") {
+		t.Fatalf("expected no text layer hint, got: %v", err)
 	}
 }
 

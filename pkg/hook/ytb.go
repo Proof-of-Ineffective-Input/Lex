@@ -193,7 +193,7 @@ func fetchOEmbed(ctx context.Context, client *http.Client, id string) (*oembed, 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("oEmbed 返回状态 %d", resp.StatusCode)
+		return nil, fmt.Errorf("oEmbed returned status %d", resp.StatusCode)
 	}
 	var m oembed
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
@@ -219,7 +219,7 @@ func fetchEnhanced(ctx context.Context, client *http.Client, target string) (*vi
 	}
 	m := ytInitialPlayerResponseRe.FindSubmatch(body)
 	if len(m) < 2 {
-		return nil, fmt.Errorf("watch 页未找到 ytInitialPlayerResponse")
+		return nil, fmt.Errorf("ytInitialPlayerResponse not found on watch page")
 	}
 	var pr ytInitialPlayerResponse
 	if err := json.Unmarshal(m[1], &pr); err != nil {
@@ -234,12 +234,15 @@ type dlErr struct {
 
 func (e *dlErr) Error() string { return e.msg }
 
-const dlErrNoYtDlp = `[ytb] 检测到系统未安装 yt-dlp，无法获取字幕与评论，仅返回元数据。
-请通知用户安装并配置 yt-dlp 以启用完整功能：
-  - 安装：https://github.com/yt-dlp/yt-dlp/releases （或 pip install yt-dlp）
-  - 若需访问会员/年龄限制视频，请配置浏览器 cookies（yt-dlp --cookies-from-browser <browser>）`
+const dlErrNoYtDlp = `[ytb] yt-dlp not found; unable to fetch subtitles and comments, returning metadata only.
+Please install and configure yt-dlp to enable full functionality:
+  - Install: https://github.com/yt-dlp/yt-dlp/releases (or pip install yt-dlp)
+  - For member/age-restricted videos, configure browser cookies (yt-dlp --cookies-from-browser <browser>)`
 
-const dlErrNoSubs = "[yt-dlp] 未能获取字幕与评论（可能无字幕、需登录或触发风控），仅返回元数据。"
+const dlErrNoSubs = "[yt-dlp] Failed to fetch subtitles and comments (no subtitles, login required, or rate-limited); returning metadata only."
+
+// dlErrPoToken 指示 YouTube 要求 PO Token 且 web_embedded 也未返回字幕。
+const dlErrPoToken = "[yt-dlp] YouTube requires a PO Token (Proof of Origin Token) to serve subtitles for this video, and the web_embedded client also returned no subtitles.\nRecommended: upgrade yt-dlp to the latest version, or install a PO Token Provider plugin (https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide)."
 
 var supportedBrowsers = []string{
 	"edge", "chrome", "chromium", "firefox", "brave", "opera", "vivaldi", "whale", "safari",
@@ -311,7 +314,7 @@ func browserRetryOrder() []string {
 }
 
 func newDlErr(stderr string) *dlErr {
-	msg := "[yt-dlp] 抓取字幕/评论失败，仅返回元数据。"
+	msg := "[yt-dlp] Failed to fetch subtitles/comments; returning metadata only."
 	if s := strings.TrimSpace(stderr); s != "" {
 		if len(s) > 300 {
 			s = s[:300]
@@ -362,6 +365,14 @@ func ytdlpFetch(ctx context.Context, id string) (string, []ytdlpComment, string,
 	}
 	defer os.RemoveAll(tmp)
 
+	// 第零层：web_embedded 无 cookie 快路径（字幕无需 PO Token，不依赖 cookies）。
+	poTokenMiss := false
+	o := runYtdlp(ctx, path, tmp, id, cookieMode{})
+	if o.subOK || o.commentOK {
+		return o.transcript, o.comments, o.description, nil
+	}
+	poTokenMiss = o.poTokenMiss
+
 	var tried []string
 	// 第一层：单参数 --cookies-from-browser 直抓所有浏览器。
 	// 失败的浏览器秒报错（浏览器锁定/无该浏览器），延迟可忽略，可并行。
@@ -370,10 +381,12 @@ func ytdlpFetch(ctx context.Context, id string) (string, []ytdlpComment, string,
 			continue
 		}
 		tried = append(tried, b)
-		if transcript, comments, description, ok := runYtdlp(ctx, path, tmp, id, cookieMode{browser: b}); ok {
+		o := runYtdlp(ctx, path, tmp, id, cookieMode{browser: b})
+		if o.subOK || o.commentOK {
 			saveLastBrowser(b)
-			return transcript, comments, description, nil
+			return o.transcript, o.comments, o.description, nil
 		}
+		poTokenMiss = poTokenMiss || o.poTokenMiss
 	}
 
 	// 第二层：直抓全失败，探测 dump 刷新缓存文件，再用缓存抓取。
@@ -385,27 +398,31 @@ func ytdlpFetch(ctx context.Context, id string) (string, []ytdlpComment, string,
 		if !probeCookies(ctx, path, b, cache) {
 			continue
 		}
-		if transcript, comments, description, ok := runYtdlp(ctx, path, tmp, id, cookieMode{cacheFile: cache}); ok {
+		o := runYtdlp(ctx, path, tmp, id, cookieMode{cacheFile: cache})
+		if o.subOK || o.commentOK {
 			saveLastBrowser(b)
-			return transcript, comments, description, nil
+			return o.transcript, o.comments, o.description, nil
 		}
+		poTokenMiss = poTokenMiss || o.poTokenMiss
 	}
 
 	// 第三层：静态缓存兜底（浏览器探测全部失败，如浏览器锁定）。
 	if cache != "" {
 		if _, err := os.Stat(cache); err == nil {
-			if transcript, comments, description, ok := runYtdlp(ctx, path, tmp, id, cookieMode{cacheFile: cache}); ok {
-				return transcript, comments, description, nil
+			o := runYtdlp(ctx, path, tmp, id, cookieMode{cacheFile: cache})
+			if o.subOK || o.commentOK {
+				return o.transcript, o.comments, o.description, nil
 			}
+			poTokenMiss = poTokenMiss || o.poTokenMiss
 		}
 	}
 
-	// 第四层：无 cookie 兜底。
-	if transcript, comments, description, ok := runYtdlp(ctx, path, tmp, id, cookieMode{}); ok {
-		return transcript, comments, description, nil
-	}
+	// 原第四层（无 cookie 兜底）已由第零层吸收。
 
-	return "", nil, "", &dlErr{msg: dlErrNoSubs + "\n已依次尝试浏览器 cookies " + strings.Join(tried, "/") + "、静态缓存 cookies 及无 cookies，均失败（无字幕、需登录或触发风控）。\n可设置环境变量 LEX_YT_BROWSER 指定浏览器，如 LEX_YT_BROWSER=edge。"}
+	if poTokenMiss {
+		return "", nil, "", &dlErr{msg: dlErrPoToken}
+	}
+	return "", nil, "", &dlErr{msg: dlErrNoSubs + "\nTried browser cookies " + strings.Join(tried, "/") + ", cached cookies, and no cookies; all failed (no subtitles, login required, or rate-limited).\nSet LEX_YT_BROWSER to specify a browser, e.g. LEX_YT_BROWSER=edge."}
 }
 
 // probeCookies 探测 yt-dlp 能否从浏览器导出 cookies 并写入缓存文件。
@@ -435,10 +452,28 @@ func probeCookies(ctx context.Context, path, browser, cacheFile string) bool {
 	return probeRe.MatchString(s)
 }
 
+// ytdlpOutcome 汇总一次 yt-dlp 调用的字幕/评论结果与诊断信息。
+type ytdlpOutcome struct {
+	transcript  string
+	comments    []ytdlpComment
+	description string
+	subOK       bool
+	commentOK   bool
+	poTokenMiss bool
+	stderr      string
+}
+
+// hasPoTokenMiss 检测 yt-dlp stderr 中是否出现 PO Token 缺失的 WARNING。
+func hasPoTokenMiss(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "po token")
+}
+
 // runYtdlp 用一次 yt-dlp 调用同时抓取字幕、评论与描述。
 // 用 --write-info-json（非 simulate）替代 --dump-single-json（simulate），
 // 使评论/描述写入 .info.json 文件的同时字幕也能落盘，避免功能冲突。
-func runYtdlp(ctx context.Context, path, tmp, id string, m cookieMode) (string, []ytdlpComment, string, bool) {
+// 固定使用 web_embedded 客户端：字幕无需 PO Token，且支持 cookies。
+// 不传 --no-warnings，以保留 PO Token 缺失的 WARNING 供诊断。
+func runYtdlp(ctx context.Context, path, tmp, id string, m cookieMode) ytdlpOutcome {
 	out := filepath.Join(tmp, "%(id)s.%(ext)s")
 	args := []string{
 		"--skip-download",
@@ -448,21 +483,28 @@ func runYtdlp(ctx context.Context, path, tmp, id string, m cookieMode) (string, 
 		"--sub-lang", "en",
 		"--convert-subs", "srt",
 		"--output", out,
-		"--no-progress", "--no-warnings",
+		"--no-progress",
+		"--extractor-args", "youtube:player_client=web_embedded",
 	}
 	args = append(args, m.args()...)
 	args = append(args, "https://www.youtube.com/watch?v="+id)
 	cmd := exec.CommandContext(ctx, path, args...)
-	if err := cmd.Run(); err != nil {
-		return "", nil, "", false
-	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	cmd.Stdout = io.Discard
+	_ = cmd.Run()
 
 	transcript, subOK := readTranscript(tmp)
 	comments, description, commentOK := readComments(tmp, id)
-	if !subOK && !commentOK {
-		return "", nil, "", false
+	return ytdlpOutcome{
+		transcript:  transcript,
+		comments:    comments,
+		description: description,
+		subOK:       subOK,
+		commentOK:   commentOK,
+		poTokenMiss: hasPoTokenMiss(stderr.String()),
+		stderr:      stderr.String(),
 	}
-	return transcript, comments, description, true
 }
 
 // readTranscript 从 tmp 目录读取转换后的 srt 字幕。

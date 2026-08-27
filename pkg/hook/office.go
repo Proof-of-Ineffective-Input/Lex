@@ -106,7 +106,7 @@ func ConvertOffice(data []byte, contentType, target string) (string, error) {
 	}
 	text := res.Markdown
 	if strings.TrimSpace(text) == "" || text == "[No readable text content found in PDF]" {
-		return "", fmt.Errorf("该 PDF 无文本层，需 OCR，超出当前能力")
+		return "", fmt.Errorf("PDF has no text layer; OCR required, which is beyond current capabilities")
 	}
 	return text, nil
 }

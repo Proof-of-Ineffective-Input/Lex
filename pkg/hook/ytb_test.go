@@ -31,6 +31,25 @@ func TestExtractVideoID(t *testing.T) {
 	}
 }
 
+func TestHasPoTokenMiss(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{"po token warning", "WARNING: [youtube] UKJkj4mTeAU: There are missing subtitles languages because a PO token was not provided.", true},
+		{"po token lowercase", "missing subtitles languages because a po token was not provided.", true},
+		{"no subtitles only", "WARNING: [youtube] There are no subtitles for the requested languages", false},
+		{"empty", "", false},
+		{"unrelated error", "ERROR: Unsupported URL", false},
+	}
+	for _, c := range cases {
+		if got := hasPoTokenMiss(c.stderr); got != c.want {
+			t.Errorf("hasPoTokenMiss(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestParseSRT(t *testing.T) {
 	srt := `1
 00:00:00,000 --> 00:00:02,000
