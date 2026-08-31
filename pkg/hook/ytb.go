@@ -56,6 +56,9 @@ type ytdlpComment struct {
 
 var ytInitialPlayerResponseRe = regexp.MustCompile(`ytInitialPlayerResponse\s*=\s*(\{.*?\});`)
 
+// ExaFetcher 外部注入的 Exa 抓取回调，用于字幕缺失时的隐式兜底
+var ExaFetcher func(ctx context.Context, client *http.Client, target string, limit int) (string, error)
+
 // YTHook 处理 YouTube 视频 URL（oEmbed + yt-dlp 字幕/评论）。
 type YTHook struct{}
 
@@ -101,7 +104,14 @@ func (YTHook) Fetch(ctx context.Context, client *http.Client, target string, lim
 	sb.WriteString(fmt.Sprintf("URL: %s\n", target))
 
 	transcript, comments, description, ytErr := ytdlpFetch(ctx, id)
-	if ytErr != nil {
+	if transcript == "" && ExaFetcher != nil {
+		// yt-dlp 未获取到字幕，尝试 Exa MCP 自动兜底
+		if exaText, err := ExaFetcher(ctx, client, target, limit); err == nil && strings.TrimSpace(exaText) != "" {
+			transcript = exaText
+		}
+	}
+
+	if ytErr != nil && transcript == "" && len(comments) == 0 {
 		sb.WriteString("\n\n---\n")
 		sb.WriteString(ytErr.Error())
 		return sb.String(), nil

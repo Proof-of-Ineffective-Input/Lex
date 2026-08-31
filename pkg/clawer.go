@@ -15,6 +15,8 @@ import (
 	"lex/pkg/hook"
 )
 
+const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/[IP] Safari/537.36"
+
 var (
 	fetchCache *expirable.LRU[string, string]
 	cacheOnce  sync.Once
