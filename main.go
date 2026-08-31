@@ -22,13 +22,11 @@ type SearchArgs struct {
 	Query       string `json:"query" jsonschema:"Search keywords for duckduckgo or natural language description for Exa"`
 	Description string `json:"description,omitempty" jsonschema:"Optional description or question for deep content reranking and highlight extraction. If omitted, uses query instead."`
 	MaxResults  int    `json:"max_results,omitempty" jsonschema:"Number of results to return. Clamped to [5, 50]. default 10"`
-	NumResults  int    `json:"numResults,omitempty" jsonschema:"Alias for max_results for Exa MCP compatibility."`
 }
 
 type FetchArgs struct {
-	URLs          []string `json:"urls" jsonschema:"List of target URLs to fetch."`
-	Limit         int      `json:"limit,omitempty" jsonschema:"Optional character limit applied to all URLs. Clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit. Default: 2000."`
-	MaxCharacters int      `json:"maxCharacters,omitempty" jsonschema:"Alias for limit for Exa MCP compatibility."`
+	URLs  []string `json:"urls" jsonschema:"List of target URLs to fetch."`
+	Limit int      `json:"limit,omitempty" jsonschema:"Optional character limit applied to all URLs. Clamped to [2000, 64000] and rounded to the nearest 1000. Set 0 for no limit. Default: 2000."`
 }
 
 type searchResult struct {
@@ -76,7 +74,7 @@ type cachedSearch struct {
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.7.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.7.1"}, nil)
 
 	for _, t := range tools {
 		t.reg(s, t.name, t.desc)
@@ -89,9 +87,6 @@ func main() {
 
 func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArgs) (*mcp.CallToolResult, any, error) {
 	maxResults := args.MaxResults
-	if maxResults <= 0 && args.NumResults > 0 {
-		maxResults = args.NumResults
-	}
 	if maxResults <= 0 {
 		maxResults = 10
 	}
@@ -177,9 +172,6 @@ func fetchHandler(ctx context.Context, req *mcp.CallToolRequest, args FetchArgs)
 	client := pkg.SharedClient
 	urls := args.URLs
 	limit := args.Limit
-	if limit == 0 && args.MaxCharacters > 0 {
-		limit = args.MaxCharacters
-	}
 	if limit == 0 {
 		limit = defaultFetchLimit
 	}
