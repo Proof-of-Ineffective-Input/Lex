@@ -26,3 +26,9 @@ func ExtractHighlightsFromAnalysis(a *PageAnalysis, query string, maxTokens int)
 	}
 	return rerank.ExtractHighlights(a.content, a.query, maxTokens)
 }
+
+// RerankByChars 按字符预算对内容做保序语义重排，返回最符合 query 语义的内容片段。
+// 供 web_fetch 的语义定向使用；预算由 char 参数驱动。
+func RerankByChars(content, query string, maxChars int) string {
+	return rerank.RerankByChars(content, query, maxChars)
+}

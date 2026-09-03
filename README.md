@@ -10,7 +10,7 @@ Unlike other search MCP servers that return only snippets and force a second `fe
 - `Dual-engine search` — Exa AI (MCP RPC) first, DuckDuckGo Lite fallback, first non-empty wins
 - `Zero-overhead extraction` — no browser, no external API, no vector DB, no RAG
 - `BM25 re-ranking` — page-level scoring with tiered highlight budgets (top half full, bottom half half)
-- `Dual-query reranking` — optional `description` augments the query for deeper content reranking
+- `Semantic fetch` — optional query re-ranks fetched content to the most relevant parts, preserving structure and order
 - `Content-aware` — probes `<main>` / `<article>` / `[role=main]` containers by priority
 - `Robust encoding` — automatic charset detection and garbled-text repair (GBK/Big5/Shift-JIS, etc.)
 - `Office documents` — direct `.pdf` / `.docx` / `.xlsx` / `.xls` / `.pptx` to Markdown conversion
@@ -39,31 +39,27 @@ Register in your MCP client config:
 }
 ```
 
-### `web_search_lex`
-
-Also callable as `search` / `web_search`.
+### `web_search`
 
 ```json
-{ "query": "Go 1.24 Swiss Table map performance", "description": "benchmark comparison", "max_results": 10 }
+{ "query": "Go 1.24 Swiss Table map performance", "max_results": 10 }
 ```
 
-- `query` — search keywords (natural language or standard operators)
-- `description` — optional; augments the query for deeper content reranking and highlight extraction
+- `query` — natural-language query describing what you want to find; works for both keyword sequences and full sentences
 - `max_results` clamped to `[5, 50]`, defaults to 10
 - Returns `Title` / `URL` / `Snippet` / `Highlights` in markdown
 - Fetches all pages concurrently → BM25 page scoring → top half gets full highlight budget (3000 tokens), bottom half gets half
 
-### `web_fetch_lex`
-
-Also callable as `fetch` / `web_fetch`.
+### `web_fetch`
 
 ```json
-{ "urls": ["https://example.com/article"], "limit": 16000 }
+{ "urls": ["https://example.com/article"], "char": "16000", "query": "benchmark comparison" }
 ```
 
 - `urls` — list of target URLs to fetch
-- `limit` — per-URL character limit clamped to `[2000, 64000]`, rounded to nearest 1000; `0` means no truncation
-- URLs sorted then fetched concurrently; failed items are annotated individually without breaking the batch
+- `char` — per-URL character budget as a number (clamped to `[2000, 64000]`, rounded to nearest 1000) or the trigger word `full` to return the entire page without reranking
+- `query` — optional semantic focus; when provided, fetched content is re-ranked to keep the parts most relevant to this query, preserving structure and order (ignored when `char` is `full`)
+- URLs fetched concurrently; failed items are annotated individually without breaking the batch
 
 ## How It Works
 

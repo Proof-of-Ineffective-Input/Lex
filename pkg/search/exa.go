@@ -56,14 +56,9 @@ type exaRPCResponse struct {
 	} `json:"error"`
 }
 
-func (ExaSearcher) Search(ctx context.Context, client *http.Client, query, description string, maxResults int) ([]SearchResult, error) {
+func (ExaSearcher) Search(ctx context.Context, client *http.Client, query string, maxResults int) ([]SearchResult, error) {
 	if maxResults <= 0 {
 		maxResults = 10
-	}
-
-	searchQ := query
-	if description != "" {
-		searchQ = query + " " + description
 	}
 
 	reqBody := exaRPCRequest{
@@ -73,7 +68,7 @@ func (ExaSearcher) Search(ctx context.Context, client *http.Client, query, descr
 		Params: exaRPCParams{
 			Name: "web_search_exa",
 			Arguments: exaSearchArgs{
-				Query:      searchQ,
+				Query:      query,
 				NumResults: maxResults,
 			},
 		},

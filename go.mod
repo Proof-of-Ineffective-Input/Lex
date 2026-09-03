@@ -5,6 +5,7 @@ go 1.25.5
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.0
 	github.com/PuerkitoBio/goquery v1.11.0
+	github.com/conductor-oss/markitdown v0.0.1
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	golang.org/x/net v0.50.0
@@ -14,7 +15,6 @@ require (
 require (
 	github.com/JohannesKaufmann/dom v0.2.0 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
-	github.com/conductor-oss/markitdown v0.0.1 // indirect
 	github.com/extrame/ole2 v0.0.0-20160812065207-d69429661ad7 // indirect
 	github.com/extrame/xls v0.0.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect

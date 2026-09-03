@@ -19,7 +19,7 @@ type SearchResult struct {
 // Searcher 抽象一种搜索引擎实现。
 type Searcher interface {
 	Name() string
-	Search(ctx context.Context, client *http.Client, query, description string, maxResults int) ([]SearchResult, error)
+	Search(ctx context.Context, client *http.Client, query string, maxResults int) ([]SearchResult, error)
 }
 
 var chain []Searcher
@@ -35,10 +35,10 @@ func ClearRegistry() {
 }
 
 // Execute 依次尝试注册表中的 Searcher，首个成功返回非空结果的输出；若全部失败则返回最后一个错误。
-func Execute(ctx context.Context, client *http.Client, query, description string, maxResults int) ([]SearchResult, string, error) {
+func Execute(ctx context.Context, client *http.Client, query string, maxResults int) ([]SearchResult, string, error) {
 	var lastErr error
 	for _, s := range chain {
-		results, err := s.Search(ctx, client, query, description, maxResults)
+		results, err := s.Search(ctx, client, query, maxResults)
 		if err == nil && len(results) > 0 {
 			return results, s.Name(), nil
 		}

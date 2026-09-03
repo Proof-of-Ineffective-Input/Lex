@@ -24,7 +24,7 @@ type DDGSearcher struct{}
 
 func (DDGSearcher) Name() string { return "ddg" }
 
-func (DDGSearcher) Search(ctx context.Context, client *http.Client, query, description string, maxResults int) ([]SearchResult, error) {
+func (DDGSearcher) Search(ctx context.Context, client *http.Client, query string, maxResults int) ([]SearchResult, error) {
 	u := fmt.Sprintf("https://lite.duckduckgo.com/lite/?q=%s", url.QueryEscape(query))
 
 	hReq, err := http.NewRequestWithContext(ctx, "GET", u, nil)
@@ -85,13 +85,9 @@ func (DDGSearcher) Search(ctx context.Context, client *http.Client, query, descr
 	fetched := pkg.FetchAll(ctx, client, urls, []int{defaultFetchLimit})
 
 	analyses := make([]*pkg.PageAnalysis, len(results))
-	rerankQuery := query
-	if description != "" {
-		rerankQuery = description
-	}
 	for i := range results {
 		if fetched[i].Err == nil {
-			analyses[i] = pkg.AnalyzePage(fetched[i].Content, rerankQuery)
+			analyses[i] = pkg.AnalyzePage(fetched[i].Content, query)
 			results[i].Score = analyses[i].Score
 		}
 	}
@@ -117,7 +113,7 @@ func (DDGSearcher) Search(ctx context.Context, client *http.Client, query, descr
 			if idx >= topN {
 				budget = highlightsFullBudget / 2
 			}
-			hl := pkg.ExtractHighlightsFromAnalysis(analyses[idx], rerankQuery, budget)
+			hl := pkg.ExtractHighlightsFromAnalysis(analyses[idx], query, budget)
 			if hl != "" {
 				results[idx].Highlights = hl
 			}
