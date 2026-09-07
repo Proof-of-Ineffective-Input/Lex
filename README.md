@@ -15,6 +15,7 @@ Unlike other search MCP servers that return only snippets and force a second `fe
 - `Robust encoding` — automatic charset detection and garbled-text repair (GBK/Big5/Shift-JIS, etc.)
 - `Office documents` — direct `.pdf` / `.docx` / `.xlsx` / `.xls` / `.pptx` to Markdown conversion
 - `YouTube bypass` — detects video links, extracts transcripts and comments via oEmbed + yt-dlp
+- `X/Twitter support` — fetches tweets, threads, comments and search results via FxTwitter API, with direct-fetch fallback
 - `Built-in cache` — LRU 1024 entries / 5-minute TTL, repeated fetches cost nothing
 - `Concurrent by design` — 8-way semaphore parallelism, graceful fallback to original snippets
 
