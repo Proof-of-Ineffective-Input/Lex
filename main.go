@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -24,10 +25,33 @@ type SearchArgs struct {
 	MaxResults int    `json:"max_results,omitempty" jsonschema:"Number of results to return. Clamped to [5, 50]. default 10"`
 }
 
+// CharArg 接受 JSON 数字或字符串，统一解析为字符串。
+type CharArg string
+
+func (c *CharArg) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		*c = ""
+		return nil
+	}
+	if strings.HasPrefix(trimmed, "\"") {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		*c = CharArg(s)
+		return nil
+	}
+	*c = CharArg(trimmed)
+	return nil
+}
+
+// FetchArgs 单 URL 入参。多 URL 并行由模型自身的并行工具调用承担，
+// 避免 array 型 schema 触发 Gemini function_declarations 校验失败。
 type FetchArgs struct {
-	URLs  []string `json:"urls" jsonschema:"List of target URLs to fetch."`
-	Char  string   `json:"char" jsonschema:"Character budget per URL as a number (clamped to [2000, 64000], rounded to nearest 1000) or the trigger word 'full' to return the entire page without reranking."`
-	Query string   `json:"query,omitempty" jsonschema:"Optional semantic focus. When provided, fetched content is re-ranked to keep the parts most relevant to this query, preserving structure and order. Ignored when char is 'full'."`
+	URL   string  `json:"url" jsonschema:"Target URL to fetch."`
+	Char  CharArg `json:"char,omitempty" jsonschema:"Character budget as a number, clamped to [2000, 64000] and rounded to nearest 1000. Defaults to 2000 when omitted."`
+	Query string  `json:"query,omitempty" jsonschema:"Optional semantic focus. When provided, fetched content is re-ranked to keep the parts most relevant to this query, preserving structure and order."`
 }
 
 type searchResult struct {
@@ -54,7 +78,7 @@ var tools = []toolSpec{
 	},
 	{
 		name: "web_fetch",
-		desc: "Fetch URL content as Markdown, with optional semantic re-ranking against a query. Supports Office documents and YouTube transcripts.",
+		desc: "Fetch a URL as Markdown, with optional semantic re-ranking against a query. Supports Office documents and YouTube transcripts. Call this tool multiple times in parallel to fetch several URLs at once.",
 		reg: func(s *mcp.Server, name, desc string) {
 			mcp.AddTool[FetchArgs, any](s, &mcp.Tool{Name: name, Description: desc}, fetchHandler)
 		},
@@ -75,7 +99,7 @@ type cachedSearch struct {
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.8.0"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.8.1"}, nil)
 
 	for _, t := range tools {
 		t.reg(s, t.name, t.desc)
@@ -162,28 +186,29 @@ func formatSearchResults(results []searchResult) *mcp.CallToolResult {
 	}
 }
 
-// parseChar 解析 fetch 的 char 参数：识别触发词 "full"（返回 0 表示不截断不 rerank），
-// 否则将数字字符串转换为 int 并 clamp 到 [2000, 64000] 取整到千位。
+// parseChar 解析 fetch 的 char 参数：空值取默认预算，其余转换为 int 后
+// clamp 到 [2000, 64000] 并取整到千位。不存在无过滤模式。
 func parseChar(s string) (int, error) {
-	if strings.EqualFold(strings.TrimSpace(s), "full") {
-		return 0, nil
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return pkg.NormalizeLimit(defaultFetchLimit), nil
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(s))
+	n, err := strconv.Atoi(s)
 	if err != nil {
-		return 0, fmt.Errorf("char must be 'full' or a number, got %q", s)
+		return 0, fmt.Errorf("char must be a number, got %q", s)
 	}
 	return pkg.NormalizeLimit(n), nil
 }
 
 func fetchHandler(ctx context.Context, req *mcp.CallToolRequest, args FetchArgs) (*mcp.CallToolResult, any, error) {
-	if len(args.URLs) == 0 {
+	if strings.TrimSpace(args.URL) == "" {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: "no url provided"}},
 			IsError: true,
 		}, nil, nil
 	}
 
-	limit, err := parseChar(args.Char)
+	limit, err := parseChar(string(args.Char))
 	if err != nil {
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
@@ -192,33 +217,22 @@ func fetchHandler(ctx context.Context, req *mcp.CallToolRequest, args FetchArgs)
 	}
 
 	client := pkg.SharedClient
-	urls := args.URLs
+	fetched := pkg.FetchAll(ctx, client, []string{args.URL}, []int{limit})
 
-	limits := make([]int, len(urls))
-	for i := range limits {
-		limits[i] = limit
+	if fetched[0].Err != nil {
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Fetch failed: %v\n\n(from %s)", fetched[0].Err, args.URL)}},
+			IsError: true,
+		}, nil, nil
 	}
 
-	fetched := pkg.FetchAll(ctx, client, urls, limits)
-
-	var sb strings.Builder
-	for i, urlStr := range urls {
-		if i > 0 {
-			sb.WriteString("\n\n---\n\n")
-		}
-		if fetched[i].Err != nil {
-			sb.WriteString(fmt.Sprintf("Fetch failed: %v\n\n(from %s)", fetched[i].Err, urlStr))
-			continue
-		}
-		content := fetched[i].Content
-		// 语义定向：非 full 且提供 query 时，保序重排到预算内最符合语义的内容
-		if limit != 0 && args.Query != "" {
-			content = pkg.RerankByChars(content, args.Query, limit)
-		}
-		sb.WriteString(content)
+	content := fetched[0].Content
+	// 语义定向：提供 query 时，保序重排到预算内最符合语义的内容
+	if args.Query != "" {
+		content = pkg.RerankByChars(content, args.Query, limit)
 	}
 
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: sb.String()}},
+		Content: []mcp.Content{&mcp.TextContent{Text: content}},
 	}, nil, nil
 }
