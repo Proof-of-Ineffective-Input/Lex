@@ -49,6 +49,9 @@ type XHook struct{}
 // Name 实现 Hook。
 func (XHook) Name() string { return "x" }
 
+// PreferRemote 实现 Hook：FxTwitter 专用链路优于远端抓取，保持本地优先。
+func (XHook) PreferRemote(target string) bool { return false }
+
 // Match 实现 Hook：URL 命中 x.com|twitter.com 的 status/profile/search。
 func (XHook) Match(target string) bool {
 	info := classifyXURL(target)

@@ -36,6 +36,11 @@ type OfficeHook struct{}
 // Name 实现 Hook。
 func (OfficeHook) Name() string { return "office" }
 
+// PreferRemote 实现 Hook：PDF 可由远端抓取，其余 Office 格式依赖 markitdown 本地解析。
+func (OfficeHook) PreferRemote(target string) bool {
+	return officeExtFromURL(target) == ".pdf"
+}
+
 // Match 实现 Hook：URL 后缀命中文档类型。
 func (OfficeHook) Match(target string) bool {
 	return officeExtFromURL(target) != ""

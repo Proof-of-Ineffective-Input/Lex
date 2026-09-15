@@ -99,7 +99,7 @@ type cachedSearch struct {
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.8.1"}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.8.2"}, nil)
 
 	for _, t := range tools {
 		t.reg(s, t.name, t.desc)

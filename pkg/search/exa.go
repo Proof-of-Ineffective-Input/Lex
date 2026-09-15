@@ -143,10 +143,7 @@ func FetchExaURL(ctx context.Context, client *http.Client, targetURL string, lim
 		return "", err
 	}
 
-	fetchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	defer cancel()
-
-	httpReq, err := http.NewRequestWithContext(fetchCtx, "POST", ExaMCPURL, bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", ExaMCPURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", err
 	}

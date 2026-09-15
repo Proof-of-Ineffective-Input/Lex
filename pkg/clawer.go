@@ -160,7 +160,8 @@ func FetchAll(ctx context.Context, client *http.Client, targets []string, limits
 }
 
 // FetchSingle 抓取 URL 并返回文本。
-// 声明式 hook 机制：查缓存 → 注册表匹配 hook → 执行 → 写缓存。
+// 声明式 hook 机制：查缓存 → 远端优先链路（如适用）→ 本地 hook → 写缓存。
+// 通用 HTML 与 PDF 走 Exa 优先、本地兜底；专用解析型 URL 保持本地优先。
 func FetchSingle(ctx context.Context, client *http.Client, target string, limit int) (string, error) {
 	limit = NormalizeLimit(limit)
 	// 缓存键去 limit 化：URL→完整内容，读取时按 limit 截断
@@ -171,14 +172,33 @@ func FetchSingle(ctx context.Context, client *http.Client, target string, limit 
 		return TruncateContent(cached, limit), nil
 	}
 
-	h := hook.Match(target)
-	if h == nil {
-		return "", fmt.Errorf("no hook matched URL: %s", target)
-	}
-	result, err := h.Fetch(ctx, client, target, limit)
+	result, err := fetchWithChain(ctx, client, target, limit)
 	if err != nil {
 		return "", err
 	}
 	cache.Add(cacheKey, result)
 	return result, nil
+}
+
+// remoteFetchTimeout 远端抓取超时上限：超时即放弃远端、回落本地，避免拖慢整体。
+const remoteFetchTimeout = 12 * time.Second
+
+// fetchWithChain 按 hook 声明的优先级执行抓取链。
+// PreferRemote 为真时先试远端（Exa），失败或空则回落本地 hook；否则仅走本地 hook。
+func fetchWithChain(ctx context.Context, client *http.Client, target string, limit int) (string, error) {
+	h := hook.Match(target)
+	if h == nil {
+		return "", fmt.Errorf("no hook matched URL: %s", target)
+	}
+
+	if hook.PreferRemote(target) && hook.ExaFetcher != nil {
+		remoteCtx, cancel := context.WithTimeout(ctx, remoteFetchTimeout)
+		remote, err := hook.ExaFetcher(remoteCtx, client, target, limit)
+		cancel()
+		if err == nil && strings.TrimSpace(remote) != "" {
+			return TruncateContent(remote, limit), nil
+		}
+	}
+
+	return h.Fetch(ctx, client, target, limit)
 }

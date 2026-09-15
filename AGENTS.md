@@ -23,15 +23,16 @@ go build -ldflags="-s -w" -o lex.exe .
   - [`pkg.ResolveDDGURL()`](pkg/clawer.go:89) — resolves DDG redirect links (`uddg=` decode, `//` protocol completion)
   - [`pkg.NormalizeLimit()`](pkg/clawer.go:109) — clamps char limits to `[2000, 64000]`, rounds to nearest 1000
   - [`pkg.FetchAll()`](pkg/clawer.go:135) — concurrent batch fetch: semaphore(8) + per-host limiter, order-preserving
-  - [`pkg.FetchSingle()`](pkg/clawer.go:164) — core fetch: LRU cache (1024 entries, 5-min TTL) → hook match → charset decode → content-area extraction → HTML→Markdown
+  - [`pkg.FetchSingle()`](pkg/clawer.go:165) — core fetch: LRU cache (1024 entries, 5-min TTL) → retry chain → charset decode → content-area extraction → HTML→Markdown
+  - [`pkg.fetchWithChain()`](pkg/clawer.go:185) — Exa-first retry chain: when the matched hook declares [`PreferRemote`](pkg/hook/registry.go:19) (generic HTML + PDF), try Exa MCP first under a 12s budget, fall back to the local hook on error/empty; specialized hooks (YouTube/X/non-PDF Office) stay local-first
   - [`pkg.AnalyzePage()`](pkg/highlights.go:14) — page-level BM25 scoring for search result tiering (thin wrapper, impl in rerank)
   - [`pkg.ExtractHighlightsFromAnalysis()`](pkg/highlights.go:23) — BM25 sentence re-ranking under a token budget (thin wrapper, impl in rerank)
   - [`pkg.RerankByChars()`](pkg/highlights.go:32) — order-preserving semantic re-rank under a char budget for `web_fetch` (thin wrapper, impl in rerank)
 - Subpackages:
   - [`pkg/search`](pkg/search/search.go) — pluggable search engine chain via the [`Searcher`](pkg/search/search.go:20) interface. [`Execute()`](pkg/search/search.go:38) tries each in order, first non-empty wins. Registration in [`exa.go`](pkg/search/exa.go:261) `init()`: [`ExaSearcher`](pkg/search/exa.go:20) first (Exa MCP RPC), [`DDGSearcher`](pkg/search/ddg.go:23) fallback (DDG Lite). Single natural-language `query` drives both engines
   - [`pkg/rerank`](pkg/rerank/rerank.go) — standalone BM25 sentence re-ranking engine, sunk out of `pkg` to avoid circular imports. Includes identifier expansion (snake_case/camelCase), stem matching, noise penalties, code-block preservation, garbled-text repair, token estimation
-  - [`pkg/hook`](pkg/hook/registry.go) — declarative hook registry for `FetchSingle`. [`Hook`](pkg/hook/registry.go:10) interface with `Match`/`Fetch`; [`Register()`](pkg/hook/registry.go:24) appends, [`Match()`](pkg/hook/registry.go:29) returns first match else `HTMLHook` fallback. Concrete hooks:
-    - [`HTMLHook`](pkg/hook/html.go:35) — built-in fallback (`Match` always true): HTTP GET → charset decode → main-content extraction → HTML→Markdown
+  - [`pkg/hook`](pkg/hook/registry.go) — declarative hook registry for `FetchSingle`. [`Hook`](pkg/hook/registry.go:10) interface with `Match`/`Fetch`/`PreferRemote`; [`Register()`](pkg/hook/registry.go:36) appends, [`Match()`](pkg/hook/registry.go:41) returns first match else `HTMLHook` fallback. [`ExaFetcher`](pkg/hook/registry.go:24) is the injected remote callback (set by `search.init`), nil disables the remote leg. Concrete hooks:
+    - [`HTMLHook`](pkg/hook/html.go:35) — built-in fallback (`Match` always true, `PreferRemote` true): HTTP GET → charset decode → main-content extraction → HTML→Markdown
     - [`OfficeHook`](pkg/hook/office.go:34) — `.pdf`/`.docx`/`.xlsx`/`.xls`/`.pptx` direct-to-Markdown via markitdown
     - [`YTHook`](pkg/hook/ytb.go) — YouTube bypass: oEmbed for basic metadata (zero deps), yt-dlp for transcripts and comments (degrades to metadata + hint on failure)
 - MCP tool names: [`web_search`](main.go:48) / [`web_fetch`](main.go:55) — generic names to maximize model willingness to call them

@@ -37,6 +37,9 @@ type HTMLHook struct{}
 // Name 实现 Hook。
 func (HTMLHook) Name() string { return "html" }
 
+// PreferRemote 实现 Hook：通用 HTML 优先走远端抓取，失败再回落本地解析。
+func (HTMLHook) PreferRemote(target string) bool { return true }
+
 // Match 实现 Hook：兜底 hook，所有未匹配的 URL 都走 HTML 抓取。
 func (HTMLHook) Match(target string) bool { return true }
 

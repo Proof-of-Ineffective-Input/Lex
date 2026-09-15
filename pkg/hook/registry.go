@@ -14,6 +14,18 @@ type Hook interface {
 	Match(target string) bool
 	// Fetch 执行抓取与解析，返回最终文本。
 	Fetch(ctx context.Context, client *http.Client, target string, limit int) (string, error)
+	// PreferRemote 声明该 URL 是否优先走远端抓取（Exa），失败再回落到本地 Fetch。
+	// 专用解析型 hook（YouTube/X/非 PDF Office）返回 false，避免远端结果破坏本地解析。
+	PreferRemote(target string) bool
+}
+
+// ExaFetcher 外部注入的远端抓取回调（由 search 包在 init 中注入）。
+// 为 nil 时表示远端链路不可用，全部回落到本地 hook。
+var ExaFetcher func(ctx context.Context, client *http.Client, target string, limit int) (string, error)
+
+// PreferRemote 判断 URL 是否应优先走远端抓取链路。
+func PreferRemote(target string) bool {
+	return Match(target).PreferRemote(target)
 }
 
 // 具体 hook 注册表：按注册顺序保存，先注册者优先。
