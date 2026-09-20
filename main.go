@@ -3,22 +3,19 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"lex/pkg"
+	"lex/pkg/httpapi"
 	"lex/pkg/search"
 )
 
-const (
-	defaultFetchLimit = 2000
-	searchCacheTTL    = 30 * time.Minute
-)
+const defaultFetchLimit = 2000
 
 type SearchArgs struct {
 	Query      string `json:"query" jsonschema:"Natural-language query describing what you want to find. Works for both keyword sequences and full sentences."`
@@ -85,21 +82,15 @@ var tools = []toolSpec{
 	},
 }
 
-// searchCache 进程内搜索缓存：query → 结果 + 过期时间。
-var searchCache = struct {
-	mu      sync.Mutex
-	entries map[string]cachedSearch
-}{
-	entries: make(map[string]cachedSearch),
-}
-
-type cachedSearch struct {
-	results   []searchResult
-	expiresAt time.Time
-}
-
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.8.2"}, nil)
+	exaAPI := flag.Bool("exa-api", false, "Enable the local Exa-compatible HTTP endpoint (for Kelivo builtin search).")
+	flag.Parse()
+
+	if *exaAPI {
+		httpapi.Start()
+	}
+
+	s := mcp.NewServer(&mcp.Implementation{Name: "Lex", Version: "0.9.0"}, nil)
 
 	for _, t := range tools {
 		t.reg(s, t.name, t.desc)
@@ -117,8 +108,7 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArg
 	}
 	maxResults = min(max(maxResults, 5), 50)
 
-	// 搜索缓存命中直接返回
-	if cached, ok := getCachedSearch(args.Query); ok {
+	if cached, ok := httpapi.GetCached(args.Query); ok {
 		return formatSearchResults(cached), nil, nil
 	}
 
@@ -131,46 +121,11 @@ func searchHandler(ctx context.Context, req *mcp.CallToolRequest, args SearchArg
 		}, nil, nil
 	}
 
-	var resList []searchResult
-	for _, r := range results {
-		resList = append(resList, searchResult{
-			Title:      r.Title,
-			URL:        r.URL,
-			Snippet:    r.Snippet,
-			Highlights: r.Highlights,
-			Score:      r.Score,
-		})
-	}
-
-	setCachedSearch(args.Query, resList)
-	return formatSearchResults(resList), nil, nil
+	httpapi.SetCached(args.Query, results)
+	return formatSearchResults(results), nil, nil
 }
 
-// getCachedSearch 读取未过期的搜索缓存。
-func getCachedSearch(query string) ([]searchResult, bool) {
-	searchCache.mu.Lock()
-	defer searchCache.mu.Unlock()
-	c, ok := searchCache.entries[query]
-	if !ok {
-		return nil, false
-	}
-	if time.Now().After(c.expiresAt) {
-		delete(searchCache.entries, query)
-		return nil, false
-	}
-	return c.results, true
-}
-
-func setCachedSearch(query string, results []searchResult) {
-	searchCache.mu.Lock()
-	defer searchCache.mu.Unlock()
-	searchCache.entries[query] = cachedSearch{
-		results:   results,
-		expiresAt: time.Now().Add(searchCacheTTL),
-	}
-}
-
-func formatSearchResults(results []searchResult) *mcp.CallToolResult {
+func formatSearchResults(results []search.SearchResult) *mcp.CallToolResult {
 	var sb strings.Builder
 	for i, r := range results {
 		if i > 0 {
